@@ -1,31 +1,32 @@
 #include <Arduino.h>
+#include <HTTPClient.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <esp_camera.h>
 
 namespace {
 
-// Zugangsdaten fuer das WLAN, das der ESP32-CAM selbst bereitstellt.
-const char kAccessPointSsid[] = "ESP32-CAM-Test";
-const char kAccessPointPassword[] = "12345678";
+// WLAN-Zugangsdaten und Ziel-URL des Raspberry-Pi-Verifikationsdiensts.
+const char kWifiSsid[] = "hs-iot";
+const char kWifiPassword[] = "hsiot2026";
+const char kVerifierUrl[] = "http://10.42.0.1:8000/api/verify?person_id=jonathan";
 
 // HTTP-Server auf Port 80 für die Weboberfläche.
 WebServer server(80);
 
-// Kameraeinstellungen: kleine Aufloesung fuer stabilen Livestream.
+// Kameraeinstellungen: kleine Aufloesung fuer schnelle Einzelbilder.
 const framesize_t kFrameSize = FRAMESIZE_QVGA;
 const int kJpegQuality = 12;
 const int kFrameBufferCount = 2;
 
-void sendIndexPage() {
-  // Einfache HTML-Seite, die nur den Livestream im Browser anzeigt.
-  const char html[] = R"HTML(
+// Einfache HTML-Seite fuer Einzelbildvorschau und manuelle Verifikation.
+static const char kIndexHtml[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ESP32-CAM Live Test</title>
+  <title>ESP32-CAM Live Test v2</title>
   <style>
     :root {
       color-scheme: light;
@@ -60,9 +61,39 @@ void sendIndexPage() {
       border-radius: 16px;
       background: #000;
     }
+    button {
+      margin-top: 16px;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font-size: 16px;
+      font-weight: 700;
+      color: white;
+      background: var(--accent);
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
     .meta {
       margin-top: 12px;
       line-height: 1.5;
+    }
+    pre {
+      margin-top: 16px;
+      background: #1f2933;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 14px;
+      overflow: auto;
+      min-height: 80px;
+      white-space: pre-wrap;
     }
     code {
       background: rgba(217, 119, 6, 0.12);
@@ -72,22 +103,179 @@ void sendIndexPage() {
     a {
       color: var(--accent);
     }
+    .result-pending {
+      background: #1f2933;
+      color: #f8fafc;
+    }
+    .result-success {
+      background: #14532d;
+      color: #ecfdf5;
+    }
+    .result-fail {
+      background: #7f1d1d;
+      color: #fef2f2;
+    }
+    .result-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .result-line {
+      margin: 4px 0;
+    }
+    .result-raw {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(255, 255, 255, 0.2);
+      font-size: 13px;
+      opacity: 0.9;
+    }
   </style>
 </head>
 <body>
   <main class="card">
-    <h1>ESP32-CAM Live Test</h1>
-    <img src="/stream" alt="Live Kamerabild">
+    <h1>ESP32-CAM Verifikation</h1>
+    <div class="meta"><code>UI-Version: v2</code></div>
+    <img id="snapshotImage" src="/snapshot?t=0" alt="Aktuelles Kamerabild">
     <div class="meta">
-      <div>Livebild der Kamera</div>
-      <div>Wenn kein Bild erscheint, kurz den Reset-Knopf am Board druecken.</div>
+      <div>Aktuelles Kamerabild</div>
+      <div>Ein Klick auf den Button sendet genau ein JPEG an den Raspberry Pi.</div>
     </div>
+    <div class="actions">
+      <button id="refreshButton" type="button">Bild aktualisieren</button>
+      <button id="verifyButton" type="button">Verifikation starten</button>
+    </div>
+    <pre id="result" class="result-pending">Noch keine Verifikation ausgefuehrt.</pre>
   </main>
+  <script>
+    const refreshButton = document.getElementById("refreshButton");
+    const button = document.getElementById("verifyButton");
+    const result = document.getElementById("result");
+    const snapshotImage = document.getElementById("snapshotImage");
+
+    function escapeHtml(value) {
+      return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+    }
+
+    function setResultState(stateClass, html) {
+      result.className = stateClass;
+      result.innerHTML = html;
+    }
+
+    function formatSimilarity(value) {
+      return value == null ? "n/a" : Number(value).toFixed(3);
+    }
+
+    function renderResult(title, stateClass, details, rawText) {
+      const detailHtml = details
+          .map((detail) => `<div class="result-line"><strong>${escapeHtml(detail.label)}:</strong> ${escapeHtml(detail.value)}</div>`)
+          .join("");
+      const rawHtml = rawText
+          ? `<div class="result-raw"><strong>Rohantwort:</strong><br>${escapeHtml(rawText)}</div>`
+          : "";
+      setResultState(
+          stateClass,
+          `<div class="result-title">${escapeHtml(title)}</div>${detailHtml}${rawHtml}`,
+      );
+    }
+
+    function refreshSnapshot() {
+      snapshotImage.src = "/snapshot?t=" + Date.now();
+    }
+
+    refreshButton.addEventListener("click", () => {
+      refreshSnapshot();
+    });
+
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      refreshButton.disabled = true;
+      renderResult("Sende Bild an den Raspberry Pi...", "result-pending", [], "");
+
+      try {
+        const response = await fetch("/verify", { method: "POST" });
+        const text = await response.text();
+
+        try {
+          const payload = JSON.parse(text);
+          const similarityText = formatSimilarity(payload.similarity);
+          if (payload.ok && payload.matched) {
+            renderResult(
+                "Zugang erlaubt",
+                "result-success",
+                [
+                  { label: "Confidence", value: similarityText },
+                  { label: "Schwellwert", value: payload.threshold },
+                  { label: "Erkannte Gesichter", value: payload.detected_faces },
+                  { label: "Referenzen", value: payload.reference_count },
+                  { label: "HTTP-Status", value: response.status },
+                ],
+                text,
+            );
+          } else if (payload.ok) {
+            let reason = "Score unter Schwellwert.";
+            if ((payload.detected_faces ?? 0) === 0) {
+              reason = "Kein Gesicht erkannt.";
+            } else if (payload.error) {
+              reason = payload.error;
+            }
+            renderResult(
+                "Kein Match",
+                "result-fail",
+                [
+                  { label: "Confidence", value: similarityText },
+                  { label: "Schwellwert", value: payload.threshold },
+                  { label: "Grund", value: reason },
+                  { label: "Erkannte Gesichter", value: payload.detected_faces },
+                  { label: "Referenzen", value: payload.reference_count },
+                  { label: "HTTP-Status", value: response.status },
+                ],
+                text,
+            );
+          } else {
+            renderResult(
+                "Fehler",
+                "result-fail",
+                [
+                  { label: "Confidence", value: similarityText },
+                  { label: "Grund", value: payload.error || "Unbekannter Fehler" },
+                  { label: "HTTP-Status", value: response.status },
+                ],
+                text,
+            );
+          }
+        } catch (error) {
+          renderResult(
+              response.ok ? "Antwort erhalten" : "Fehler",
+              response.ok ? "result-success" : "result-fail",
+              [{ label: "HTTP-Status", value: response.status }],
+              text,
+          );
+        }
+      } catch (error) {
+        renderResult(
+            "Fehler beim Senden",
+            "result-fail",
+            [{ label: "Grund", value: error }],
+            "",
+        );
+      } finally {
+        button.disabled = false;
+        refreshButton.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>
 )HTML";
 
-  server.send(200, "text/html; charset=utf-8", html);
+void sendIndexPage() {
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server.sendHeader("Pragma", "no-cache");
+  server.send_P(200, "text/html; charset=utf-8", kIndexHtml);
 }
 
 bool initCamera() {
@@ -136,61 +324,103 @@ bool initCamera() {
   return true;
 }
 
-void handleStream() {
-  // Die Browser-Anfrage fuer den Stream liefert fortlaufend neue JPEG-Bilder.
-  WiFiClient client = server.client();
+bool connectToWifi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.begin(kWifiSsid, kWifiPassword);
 
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
-  client.println("Cache-Control: no-cache");
-  client.println("Connection: close");
-  client.println();
+  Serial.println();
+  Serial.print("Verbinde mit WLAN");
 
-  while (client.connected()) {
-    // Ein aktuelles Kamerabild aus dem Framebuffer holen.
-    camera_fb_t *frame = esp_camera_fb_get();
-    if (frame == nullptr) {
-      Serial.println("Stream-Frame konnte nicht gelesen werden.");
-      break;
-    }
-
-    // Ein einzelnes JPEG-Bild als Teil des MJPEG-Streams an den Browser senden.
-    client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", frame->len);
-    client.write(frame->buf, frame->len);
-    client.print("\r\n");
-
-    // Das Bild nach dem Senden wieder freigeben.
-    esp_camera_fb_return(frame);
-
-    if (!client.connected()) {
-      break;
-    }
-
-    // Kurze Pause zwischen zwei Bildern, damit der Stream stabil bleibt.
-    delay(30);
+  const unsigned long startMillis = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startMillis < 20000) {
+    delay(500);
+    Serial.print(".");
   }
+  Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WLAN-Verbindung fehlgeschlagen.");
+    return false;
+  }
+
+  Serial.print("WLAN verbunden. ESP-IP: ");
+  Serial.println(WiFi.localIP());
+  Serial.print("Verifier-Ziel: ");
+  Serial.println(kVerifierUrl);
+  return true;
 }
 
-void startAccessPoint() {
-  // Der ESP arbeitet als eigener WLAN-Hotspot, kein externer Router noetig.
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(kAccessPointSsid, kAccessPointPassword);
+void handleSnapshot() {
+  camera_fb_t *frame = esp_camera_fb_get();
+  if (frame == nullptr) {
+    Serial.println("[SNAPSHOT] Kamerabild konnte nicht gelesen werden.");
+    server.send(500, "text/plain; charset=utf-8", "Kamerabild konnte nicht gelesen werden.");
+    return;
+  }
 
-  IPAddress ip = WiFi.softAPIP();
-  Serial.println();
-  Serial.println("WLAN-Hotspot gestartet");
-  Serial.print("SSID: ");
-  Serial.println(kAccessPointSsid);
-  Serial.print("Passwort: ");
-  Serial.println(kAccessPointPassword);
-  Serial.print("Weboberflaeche: http://");
-  Serial.println(ip);
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server.send_P(200, "image/jpeg", reinterpret_cast<const char *>(frame->buf), frame->len);
+  esp_camera_fb_return(frame);
+}
+
+void handleVerify() {
+  Serial.println("[VERIFY] Anfrage vom Browser empfangen.");
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[VERIFY] WLAN nicht verbunden.");
+    server.send(503, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"ESP ist nicht mit dem WLAN verbunden.\"}");
+    return;
+  }
+
+  Serial.println("[VERIFY] Hole Kamerabild...");
+  camera_fb_t *frame = esp_camera_fb_get();
+  if (frame == nullptr) {
+    Serial.println("[VERIFY] Kamerabild konnte nicht gelesen werden.");
+    server.send(500, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"Kamerabild konnte nicht gelesen werden.\"}");
+    return;
+  }
+
+  Serial.printf("[VERIFY] Kamerabild vorhanden. Groesse: %u Bytes\n", frame->len);
+
+  HTTPClient http;
+  http.setTimeout(15000);
+
+  int statusCode = -1;
+  String responseBody = "{\"ok\":false,\"error\":\"Unbekannter Fehler.\"}";
+
+  Serial.printf("[VERIFY] Sende POST an %s\n", kVerifierUrl);
+  if (http.begin(kVerifierUrl)) {
+    http.addHeader("Content-Type", "image/jpeg");
+    statusCode = http.POST(frame->buf, frame->len);
+    Serial.printf("[VERIFY] POST abgeschlossen. Status: %d\n", statusCode);
+
+    if (statusCode > 0) {
+      responseBody = http.getString();
+      Serial.printf("[VERIFY] Antwort vom Pi: %s\n", responseBody.c_str());
+    } else {
+      Serial.printf("[VERIFY] HTTP-Fehler: %s\n", http.errorToString(statusCode).c_str());
+      responseBody = String("{\"ok\":false,\"error\":\"HTTP POST fehlgeschlagen: ") + http.errorToString(statusCode) + "\"}";
+    }
+
+    http.end();
+  } else {
+    Serial.println("[VERIFY] Verifier-URL konnte nicht initialisiert werden.");
+    responseBody = "{\"ok\":false,\"error\":\"Verifier-URL konnte nicht initialisiert werden.\"}";
+  }
+
+  esp_camera_fb_return(frame);
+  Serial.println("[VERIFY] Kamerabild freigegeben, sende Antwort an Browser.");
+
+  server.send(statusCode > 0 ? statusCode : 502, "application/json; charset=utf-8", responseBody);
+  Serial.println("[VERIFY] Browser-Antwort gesendet.");
 }
 
 void startServer() {
-  // Startseite und Livestream-Route mit ihren Funktionen verknuepfen.
+  // Startseite, Einzelbild und Verifikationsroute mit ihren Funktionen verknuepfen.
   server.on("/", HTTP_GET, sendIndexPage);
-  server.on("/stream", HTTP_GET, handleStream);
+  server.on("/snapshot", HTTP_GET, handleSnapshot);
+  server.on("/verify", HTTP_POST, handleVerify);
   server.begin();
   Serial.println("Webserver gestartet.");
 }
@@ -211,7 +441,7 @@ void setup() {
   }
 
   // Danach Netzwerk und Webserver einschalten.
-  startAccessPoint();
+  connectToWifi();
   startServer();
 }
 

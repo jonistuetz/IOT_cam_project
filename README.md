@@ -1,31 +1,70 @@
 # hs_IOT
 
-Erster Prototyp fuer Gesichtverifikation mit ESP32-CAM und Raspberry Pi 4.
+Prototyp einer smarten, vernetzten Tuerklingel mit `ESP32-CAM` als Kamera-/Geraeteknoten und `Raspberry Pi` als Verifikations- und Dashboard-Server.
 
-## Aufbau
+## Aktueller Stand
 
-- `src/main.cpp`: ESP32-CAM streamt weiter lokal und kann ein JPEG per HTTP an den Raspberry Pi schicken.
-- `raspberry_pi/face_verifier.py`: InsightFace-basierter Verifikationsdienst mit `buffalo_sc`, ONNX Runtime CPU und SQLite-Logging.
-- `raspberry_pi/requirements.txt`: Python-Abhaengigkeiten fuer den Pi.
+Der Prototyp bildet aktuell diesen Ablauf ab:
 
-## Raspberry Pi 4
+1. Der `ESP32-CAM` bootet und verbindet sich mit dem WLAN.
+2. Direkt nach dem Start wird ein Klingelereignis simuliert.
+3. Der ESP wartet kurz, blinkt als Startsignal und nimmt dann `3` Bilder mit Blitz auf.
+4. Jedes Bild wird an den Raspberry Pi an `/api/ring-capture` geschickt.
+5. Der Raspberry Pi fuehrt fuer jedes Bild die Gesichtverifikation aus, speichert Snapshots und loggt das Gesamtereignis.
+6. Das Pi-Dashboard zeigt:
+   - Livebild vom ESP (nur auf Knopfdruck über Dashboard)
+   - letztes Klingelereignis
+   - Burst-Snapshots
+   - Verlauf mit Filtern
 
-Python-Umgebung einrichten und Modell laden:
+## Rollen der Geraete
+
+### Raspberry Pi
+
+- hostet die Hauptoberflaeche
+- fuehrt die InsightFace-Verifikation aus
+- speichert Logs und Burst-Snapshots
+- bietet Dashboard und APIs an
+
+### ESP32-CAM
+
+- verbindet sich mit dem WLAN
+- nimmt Snapshots auf
+- fuehrt den Ring-/Burst-Workflow aus
+- liefert nur noch eine kleine Geraete-API
+
+Die HTML-Hauptoberflaeche liegt **nicht mehr auf dem ESP**, sondern auf dem Pi.
+
+## Projektstruktur
+
+- [src/main.cpp](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/src/main.cpp): ESP32-CAM-Firmware
+- [raspberry_pi/face_verifier.py](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/raspberry_pi/face_verifier.py): Flask-App, Verifikation, Dashboard, Logging
+- [raspberry_pi/requirements.txt](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/raspberry_pi/requirements.txt): Python-Abhaengigkeiten
+
+## Raspberry Pi einrichten
+
+### Python-Umgebung
 
 ```bash
-cd raspberry_pi
+cd /home/pi4/iot_project
 python3 -m venv .venv
 source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 python face_verifier.py init-db
+```
+
+Danach den Dienst starten:
+
+```bash
+cd /home/pi4/iot_project
+source .venv/bin/activate
 python face_verifier.py serve --host 0.0.0.0 --port 8000
 ```
 
-Beim ersten Start laedt InsightFace das Modell `buffalo_sc` herunter. Fuer den Prototyp wird nur `CPUExecutionProvider` verwendet.
+Beim ersten Start laedt InsightFace automatisch das Modell `buffalo_sc` herunter. Der Prototyp nutzt nur `CPUExecutionProvider`.
 
-### Referenzbilder speichern
-
-Mehrere Referenz-Embeddings pro Person sind vorgesehen. Fuer einen ersten Test pro Person 3-5 Bilder mit leicht variierenden Winkeln und Licht aufnehmen:
+### Referenzbilder anlernen
 
 ```bash
 python face_verifier.py enroll-image --person-id jonathan --image /pfad/bild1.jpg --note frontal
@@ -41,42 +80,116 @@ curl -X POST http://PI_IP:8000/api/enroll \
   -F image=@/pfad/bild1.jpg
 ```
 
-### Verifikation testen
+## ESP32-CAM konfigurieren
 
-Lokal:
-
-```bash
-python face_verifier.py verify-image --person-id jonathan --image /pfad/test.jpg
-```
-
-Per HTTP:
-
-```bash
-curl -X POST "http://PI_IP:8000/api/verify?person_id=jonathan" \
-  -H "Content-Type: image/jpeg" \
-  --data-binary @/pfad/test.jpg
-```
-
-Die Antworten enthalten `matched`, `similarity`, `threshold` und Fehlerdetails. Jede Verifikation wird in SQLite in `verification_logs` gespeichert.
-
-## ESP32-CAM
-
-In [src/main.cpp](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/src/main.cpp:1) muessen noch drei Konstanten auf dein Netz angepasst werden:
+In [src/main.cpp](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/src/main.cpp:1) muessen diese Konstanten zu deinem Netz passen:
 
 - `kWifiSsid`
 - `kWifiPassword`
 - `kVerifierUrl`
+- `kRingCaptureBaseUrl`
 
-Danach verbindet sich der ESP32-CAM mit demselben WLAN wie der Raspberry Pi, zeigt weiter den Livestream an und sendet bei `POST /verify` ein einzelnes JPEG an den Pi. Die Root-Seite bietet dafuer einen Button.
+Aktuell nimmt der ESP an, dass der Pi unter `10.42.0.1:8000` laeuft.
 
-## SQLite
+### Aktuelle ESP-Logik
 
-Die Datenbank liegt standardmaessig unter `raspberry_pi/face_verification.db` und enthaelt:
+- `GPIO4` wird als Blitz-LED genutzt
+- nach Boot wird automatisch ein Klingelereignis gestartet
+- vor dem Burst gibt es `2` langsame Startblinksignale
+- danach werden `3` Bilder mit jeweils kurzem Blitz aufgenommen
+- die Bilder gehen an den Pi
 
-- `reference_embeddings`: mehrere Referenz-Embeddings pro Person
-- `verification_logs`: Ergebnis, Similarity, Schwelle, Anzahl Referenzen und eventuelle Fehler
+Der bisherige Board-Button wird **nicht mehr** als Eingabe genutzt. Spaeter soll ein externer Taster an einen separaten GPIO angeschlossen werden.
+
+## Dashboard auf dem Pi
+
+Die Hauptoberflaeche ist:
+
+```text
+http://PI_IP:8000/
+```
+
+Aktuell bietet das Dashboard:
+
+- Livebild vom ESP ueber Pi-Proxy
+- letztes Klingelereignis
+- gespeicherte Burst-Snapshots
+- Verlauf
+- Filter im Verlaufsfenster:
+  - Person
+  - Tag
+  - Status (`Match` / `kein Match`)
+
+Das Livebild aktualisiert sich **nur auf Knopfdruck**.
+
+## Relevante Endpunkte
+
+### Pi
+
+- `GET /` -> Dashboard
+- `GET /health` -> Status des Pi-Dienstes
+- `GET /api/dashboard` -> Dashboard-Daten als JSON
+- `GET /api/live-snapshot` -> Pi holt ein Snapshot vom ESP und reicht es weiter
+- `POST /api/enroll` -> Referenzbild speichern
+- `POST /api/verify` -> einzelnes Bild verifizieren
+- `POST /api/ring-capture` -> einzelnes Burst-Bild innerhalb eines Klingelereignisses
+- `GET /captures/<datei>` -> gespeicherte Burst-Bilder
+
+### ESP
+
+- `GET /` -> Status-JSON
+- `GET /status` -> Status-JSON
+- `GET /snapshot` -> aktuelles JPEG
+- `POST /verify` -> Debug-Verify eines Einzelbilds
+- `POST /ring` -> Ring-Workflow manuell ausloesen
+
+## Logging und Datenhaltung
+
+Die Datenbank liegt standardmaessig unter:
+
+```text
+raspberry_pi/face_verification.db
+```
+
+Aktuell verwendete Tabellen:
+
+- `reference_embeddings`
+- `verification_logs`
+- `ring_events`
+- `ring_captures`
+
+Zusatzlich werden Burst-Bilder gespeichert unter:
+
+```text
+raspberry_pi/captures/
+```
+
+## Typischer Entwicklungsablauf
+
+### Pi-Code deployen
+
+```bash
+cd /Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT
+rsync -avz raspberry_pi/ pi4-direct:/home/pi4/iot_project/
+```
+
+Dann auf dem Pi:
+
+```bash
+ssh pi4-direct
+cd /home/pi4/iot_project
+source .venv/bin/activate
+python face_verifier.py serve
+```
+
+### ESP-Code deployen
+
+- Firmware in PlatformIO bauen
+- auf den ESP32-CAM flashen
+- seriellen Monitor beobachten
 
 ## Hinweise
 
-- Der Standardwert fuer die Cosine-Similarity-Schwelle ist `0.42`. Das ist ein brauchbarer Startwert fuer den Prototypen, sollte aber mit echten Daten nachkalibriert werden.
-- Der aktuelle ESP-Flow ist bewusst einfach gehalten: ein JPEG pro Anfrage statt Videostreaming zum Pi.
+- Der Standard-Schwellwert fuer Cosine Similarity ist `0.42`.
+- Das Livebild im Pi-Dashboard nutzt aktuell eine fest hinterlegte ESP-IP (`DEFAULT_ESP_SNAPSHOT_URL`). Wenn sich die ESP-IP aendert, muss diese Konstante angepasst werden.
+- Der aktuelle Klingelablauf wird noch ueber `Reset = Boot = Klingeltest` simuliert. Ein echter externer Taster folgt spaeter.

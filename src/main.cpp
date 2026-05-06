@@ -11,6 +11,7 @@ const char kWifiSsid[] = "hs-iot";
 const char kWifiPassword[] = "hsiot2026";
 const char kVerifierUrl[] = "http://10.42.0.1:8000/api/verify?person_id=jonathan";
 const char kRingCaptureBaseUrl[] = "http://10.42.0.1:8000/api/ring-capture?person_id=jonathan";
+const char kLogUrl[] = "http://10.42.0.1:8000/api/esp-log";
 
 // HTTP-Server auf Port 80 für die Geräte-API.
 WebServer server(80);
@@ -18,17 +19,169 @@ WebServer server(80);
 // Kameraeinstellungen: kleine Aufloesung fuer schnelle Einzelbilder.
 const framesize_t kFrameSize = FRAMESIZE_QVGA;
 const int kJpegQuality = 12;
-const int kFrameBufferCount = 2;
+const int kFrameBufferCount = 1;
 const int kFlashLedPin = 4;
+const int kButtonPin = 13;
+const int kAccessLedRedPin = 15;
+const int kAccessLedGreenPin = 2;
+const int kAccessLedRedChannel = 2;
+const int kAccessLedGreenChannel = 3;
+const int kAccessLedPwmFrequency = 5000;
+const int kAccessLedPwmResolution = 8;
+const int kAccessLedMaxBrightness = 255;
+const int kAccessLedVerifyingRedBrightness = 255;
+const int kAccessLedVerifyingGreenBrightness = 70;
 const int kBurstImageCount = 3;
 const unsigned long kRingSettleDelayMs = 700;
 const unsigned long kFlashWarmupDelayMs = 120;
 const unsigned long kBurstPauseMs = 180;
+const unsigned long kDiscardedFramePauseMs = 60;
+const unsigned long kButtonDebounceMs = 60;
+const unsigned long kRemoteLogRetryMs = 5000;
+const int kRemoteLogQueueSize = 24;
+const int kDiscardedFrameCount = 2;
+const int kRequiredMatchesForAccess = 2;
 
 bool gRingInProgress = false;
+bool gLastButtonReading = HIGH;
+bool gStableButtonState = HIGH;
+unsigned long gLastButtonChangeMs = 0;
+String gRemoteLogQueue[kRemoteLogQueueSize];
+int gRemoteLogHead = 0;
+int gRemoteLogCount = 0;
+String gRemoteLogLine;
+bool gRemoteLogSending = false;
+unsigned long gLastRemoteLogAttemptMs = 0;
+
+bool ensureWifiConnected();
+
+void queueRemoteLogLine(const String &line) {
+  if (line.length() == 0) {
+    return;
+  }
+
+  int index = (gRemoteLogHead + gRemoteLogCount) % kRemoteLogQueueSize;
+  if (gRemoteLogCount == kRemoteLogQueueSize) {
+    gRemoteLogHead = (gRemoteLogHead + 1) % kRemoteLogQueueSize;
+    gRemoteLogCount--;
+  }
+
+  gRemoteLogQueue[index] = line;
+  gRemoteLogCount++;
+}
+
+void appendRemoteLogText(const String &text) {
+  for (int i = 0; i < text.length(); ++i) {
+    char c = text[i];
+    if (c == '\r') {
+      continue;
+    }
+    if (c == '\n') {
+      queueRemoteLogLine(gRemoteLogLine);
+      gRemoteLogLine = "";
+      continue;
+    }
+
+    gRemoteLogLine += c;
+    if (gRemoteLogLine.length() >= 220) {
+      queueRemoteLogLine(gRemoteLogLine);
+      gRemoteLogLine = "";
+    }
+  }
+}
+
+void flushRemoteLogs() {
+  if (gRemoteLogSending || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  if (gRemoteLogCount == 0) {
+    return;
+  }
+
+  unsigned long now = millis();
+  if (gLastRemoteLogAttemptMs != 0 && now - gLastRemoteLogAttemptMs < kRemoteLogRetryMs) {
+    return;
+  }
+
+  gRemoteLogSending = true;
+  while (gRemoteLogCount > 0 && WiFi.status() == WL_CONNECTED) {
+    String line = gRemoteLogQueue[gRemoteLogHead];
+    HTTPClient http;
+    http.setTimeout(2500);
+
+    bool sent = false;
+    gLastRemoteLogAttemptMs = millis();
+    if (http.begin(kLogUrl)) {
+      http.addHeader("Content-Type", "text/plain; charset=utf-8");
+      http.addHeader("X-ESP-MAC", WiFi.macAddress());
+      int statusCode = http.POST(line);
+      sent = statusCode > 0 && statusCode < 500;
+      http.end();
+    }
+
+    if (!sent) {
+      break;
+    }
+
+    gLastRemoteLogAttemptMs = 0;
+
+    gRemoteLogQueue[gRemoteLogHead] = "";
+    gRemoteLogHead = (gRemoteLogHead + 1) % kRemoteLogQueueSize;
+    gRemoteLogCount--;
+  }
+  gRemoteLogSending = false;
+}
+
+void logPrint(const String &text) {
+  Serial.print(text);
+  appendRemoteLogText(text);
+}
+
+void logPrintln(const String &text = "") {
+  Serial.println(text);
+  appendRemoteLogText(text);
+  appendRemoteLogText("\n");
+}
+
+void logPrintf(const char *format, ...) {
+  char buffer[512];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  Serial.print(buffer);
+  appendRemoteLogText(buffer);
+}
 
 void setFlashLed(bool enabled) {
   digitalWrite(kFlashLedPin, enabled ? HIGH : LOW);
+}
+
+void setAccessLedBrightness(int redBrightness, int greenBrightness) {
+  ledcWrite(kAccessLedRedChannel, constrain(redBrightness, 0, kAccessLedMaxBrightness));
+  ledcWrite(kAccessLedGreenChannel, constrain(greenBrightness, 0, kAccessLedMaxBrightness));
+}
+
+void setAccessLed(bool redEnabled, bool greenEnabled) {
+  setAccessLedBrightness(
+      redEnabled ? kAccessLedMaxBrightness : 0,
+      greenEnabled ? kAccessLedMaxBrightness : 0);
+}
+
+void setAccessLedVerifying() {
+  setAccessLedBrightness(kAccessLedVerifyingRedBrightness, kAccessLedVerifyingGreenBrightness);
+}
+
+void initAccessLed() {
+  ledcSetup(kAccessLedRedChannel, kAccessLedPwmFrequency, kAccessLedPwmResolution);
+  ledcSetup(kAccessLedGreenChannel, kAccessLedPwmFrequency, kAccessLedPwmResolution);
+  ledcAttachPin(kAccessLedRedPin, kAccessLedRedChannel);
+  ledcAttachPin(kAccessLedGreenPin, kAccessLedGreenChannel);
+  setAccessLed(false, false);
+}
+
+void showVerificationResult(bool admitted) {
+  setAccessLed(!admitted, admitted);
 }
 
 void blinkFlashLed(int blinkCount, unsigned long onMs, unsigned long offMs) {
@@ -49,6 +202,51 @@ void blinkStartSequence() {
 bool jsonHasTrue(const String &payload, const char *key) {
   String pattern = String("\"") + key + "\":true";
   return payload.indexOf(pattern) >= 0;
+}
+
+bool jsonHasFalse(const String &payload, const char *key) {
+  String pattern = String("\"") + key + "\":false";
+  return payload.indexOf(pattern) >= 0;
+}
+
+bool jsonHasKey(const String &payload, const char *key) {
+  String pattern = String("\"") + key + "\":";
+  return payload.indexOf(pattern) >= 0;
+}
+
+bool responseAllowsAccess(const String &payload) {
+  if (jsonHasTrue(payload, "overall_matched")) {
+    return true;
+  }
+  if (jsonHasFalse(payload, "overall_matched")) {
+    return false;
+  }
+  return jsonHasTrue(payload, "matched");
+}
+
+bool responseHasVerificationResult(const String &payload) {
+  return jsonHasKey(payload, "overall_matched") || jsonHasKey(payload, "matched");
+}
+
+void blinkAccessError() {
+  for (int i = 0; i < 3; ++i) {
+    setAccessLed(true, false);
+    delay(120);
+    setAccessLed(false, false);
+    delay(120);
+  }
+}
+
+void showAccessLedForResponse(const String &payload) {
+  if (!responseHasVerificationResult(payload)) {
+    logPrintln("[ACCESS] Kein Verifikationsergebnis, LED bleibt aus.");
+    blinkAccessError();
+    return;
+  }
+
+  bool admitted = responseAllowsAccess(payload);
+  showVerificationResult(admitted);
+  logPrintf("[ACCESS] Ergebnis: %s\n", admitted ? "Zulassung" : "Ablehnung");
 }
 
 int jsonGetInt(const String &payload, const char *key, int fallback = -1) {
@@ -74,6 +272,16 @@ int jsonGetInt(const String &payload, const char *key, int fallback = -1) {
 camera_fb_t *captureFrameWithFlash() {
   setFlashLed(true);
   delay(kFlashWarmupDelayMs);
+
+  for (int i = 0; i < kDiscardedFrameCount; ++i) {
+    camera_fb_t *staleFrame = esp_camera_fb_get();
+    if (staleFrame != nullptr) {
+      esp_camera_fb_return(staleFrame);
+      logPrintf("[CAM] Verwerfe altes Frame %d/%d.\n", i + 1, kDiscardedFrameCount);
+    }
+    delay(kDiscardedFramePauseMs);
+  }
+
   camera_fb_t *frame = esp_camera_fb_get();
   setFlashLed(false);
   return frame;
@@ -94,19 +302,19 @@ String postFrameToPi(
   *captureMatched = false;
   *overallMatched = false;
 
-  Serial.printf("[RING] Sende Bild an %s\n", url.c_str());
+  logPrintf("[RING] Sende Bild an %s\n", url.c_str());
   if (!http.begin(url)) {
-    Serial.println("[RING] Verifier-URL konnte nicht initialisiert werden.");
+    logPrintln("[RING] Verifier-URL konnte nicht initialisiert werden.");
     return "{\"ok\":false,\"error\":\"Verifier-URL konnte nicht initialisiert werden.\"}";
   }
 
   http.addHeader("Content-Type", "image/jpeg");
   *statusCode = http.POST(frame->buf, frame->len);
-  Serial.printf("[RING] POST abgeschlossen. Status: %d\n", *statusCode);
+  logPrintf("[RING] POST abgeschlossen. Status: %d\n", *statusCode);
 
   if (*statusCode > 0) {
     responseBody = http.getString();
-    Serial.printf("[RING] Antwort vom Pi: %s\n", responseBody.c_str());
+    logPrintf("[RING] Antwort vom Pi: %s\n", responseBody.c_str());
     *captureMatched = jsonHasTrue(responseBody, "matched");
     *overallMatched = jsonHasTrue(responseBody, "overall_matched");
     if (eventId != nullptr) {
@@ -117,7 +325,7 @@ String postFrameToPi(
     }
   } else {
     responseBody = String("{\"ok\":false,\"error\":\"HTTP POST fehlgeschlagen: ") + http.errorToString(*statusCode) + "\"}";
-    Serial.printf("[RING] HTTP-Fehler: %s\n", http.errorToString(*statusCode).c_str());
+    logPrintf("[RING] HTTP-Fehler: %s\n", http.errorToString(*statusCode).c_str());
   }
 
   http.end();
@@ -130,34 +338,34 @@ String runRingWorkflow() {
   }
 
   gRingInProgress = true;
-  Serial.println("[RING] Klingelereignis gestartet.");
+  logPrintln("[RING] Klingelereignis gestartet.");
 
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!ensureWifiConnected()) {
     gRingInProgress = false;
-    Serial.println("[RING] WLAN nicht verbunden.");
+    logPrintln("[RING] WLAN nicht verbunden.");
     return "{\"ok\":false,\"error\":\"ESP ist nicht mit dem WLAN verbunden.\"}";
   }
 
-  Serial.println("[RING] Startsignal blinkt.");
+  logPrintln("[RING] Startsignal blinkt.");
   blinkStartSequence();
   delay(kRingSettleDelayMs);
 
-  bool anyMatched = false;
+  int matchedImages = 0;
   bool allSuccessful = true;
   int eventId = -1;
   String lastResponse = "{\"ok\":false,\"error\":\"Keine Antwort vom Pi erhalten.\"}";
 
   for (int sequence = 1; sequence <= kBurstImageCount; ++sequence) {
-    Serial.printf("[RING] Erfasse Bild %d/%d ...\n", sequence, kBurstImageCount);
+    logPrintf("[RING] Erfasse Bild %d/%d ...\n", sequence, kBurstImageCount);
     camera_fb_t *frame = captureFrameWithFlash();
     if (frame == nullptr) {
-      Serial.println("[RING] Kamerabild konnte nicht gelesen werden.");
+      logPrintln("[RING] Kamerabild konnte nicht gelesen werden.");
       allSuccessful = false;
       lastResponse = "{\"ok\":false,\"error\":\"Kamerabild konnte nicht gelesen werden.\"}";
       continue;
     }
 
-    Serial.printf("[RING] Bild %d vorhanden. Groesse: %u Bytes\n", sequence, frame->len);
+    logPrintf("[RING] Bild %d vorhanden. Groesse: %u Bytes\n", sequence, frame->len);
 
     String url = String(kRingCaptureBaseUrl) +
                  "&sequence=" + sequence +
@@ -176,24 +384,40 @@ String runRingWorkflow() {
       allSuccessful = false;
     }
 
-    anyMatched = anyMatched || captureMatched || overallMatched;
+    if (captureMatched) {
+      matchedImages++;
+    }
     delay(kBurstPauseMs);
   }
 
   gRingInProgress = false;
+  bool accessGranted = matchedImages >= kRequiredMatchesForAccess;
 
-  if (!allSuccessful && !anyMatched) {
+  if (!allSuccessful && matchedImages == 0) {
     return lastResponse;
   }
 
   String summary = String("{\"ok\":true,\"event_id\":") + eventId +
-                   ",\"overall_matched\":" + (anyMatched ? "true" : "false") +
+                   ",\"matched_images\":" + matchedImages +
+                   ",\"required_matches\":" + kRequiredMatchesForAccess +
+                   ",\"overall_matched\":" + (accessGranted ? "true" : "false") +
                    ",\"last_response\":" + lastResponse + "}";
-  Serial.printf("[RING] Klingelereignis abgeschlossen: %s\n", summary.c_str());
+  logPrintf("[RING] Klingelereignis abgeschlossen: %s\n", summary.c_str());
   return summary;
 }
 
+String runRingWorkflowWithAccessLed() {
+  setAccessLedVerifying();
+  String responseBody = runRingWorkflow();
+  showAccessLedForResponse(responseBody);
+  return responseBody;
+}
+
 bool initCamera() {
+  bool hasPsram = psramFound();
+  logPrintf("[CAM] PSRAM: %s\n", hasPsram ? "gefunden" : "nicht gefunden");
+  logPrintln("[CAM] Initialisiere Kamera...");
+
   // Das Pinout ist hier fuer das gaengige ESP32-CAM / AI-Thinker-Layout gesetzt.
   camera_config_t config = {};
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -216,17 +440,21 @@ bool initCamera() {
   config.pin_reset = -1;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = kFrameSize;
-  config.jpeg_quality = kJpegQuality;
+  config.frame_size = hasPsram ? kFrameSize : FRAMESIZE_QQVGA;
+  config.jpeg_quality = hasPsram ? kJpegQuality : 15;
   config.fb_count = kFrameBufferCount;
   config.grab_mode = CAMERA_GRAB_LATEST;
+#if defined(CAMERA_FB_IN_PSRAM) && defined(CAMERA_FB_IN_DRAM)
+  config.fb_location = hasPsram ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
+#endif
 
   // Kamera-Hardware initialisieren.
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Kamera-Start fehlgeschlagen. Fehlercode: 0x%x\n", err);
+    logPrintf("Kamera-Start fehlgeschlagen. Fehlercode: 0x%x\n", err);
     return false;
   }
+  logPrintln("[CAM] Kamera bereit.");
 
   // Kleine Bildoptimierungen fuer das angezeigte Kamerabild.
   sensor_t *sensor = esp_camera_sensor_get();
@@ -244,26 +472,37 @@ bool connectToWifi() {
   WiFi.setSleep(false);
   WiFi.begin(kWifiSsid, kWifiPassword);
 
-  Serial.println();
-  Serial.print("Verbinde mit WLAN");
+  logPrintln();
+  logPrint("Verbinde mit WLAN");
 
   const unsigned long startMillis = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - startMillis < 20000) {
     delay(500);
-    Serial.print(".");
+    logPrint(".");
   }
-  Serial.println();
+  logPrintln();
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WLAN-Verbindung fehlgeschlagen.");
+    logPrintln("WLAN-Verbindung fehlgeschlagen.");
     return false;
   }
 
-  Serial.print("WLAN verbunden. ESP-IP: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("Verifier-Ziel: ");
-  Serial.println(kVerifierUrl);
+  logPrint("WLAN verbunden. ESP-IP: ");
+  logPrintln(WiFi.localIP().toString());
+  logPrint("Verifier-Ziel: ");
+  logPrintln(kVerifierUrl);
+  flushRemoteLogs();
   return true;
+}
+
+bool ensureWifiConnected() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return true;
+  }
+
+  logPrintln("[WIFI] Nicht verbunden, versuche erneute Verbindung.");
+  WiFi.disconnect();
+  return connectToWifi();
 }
 
 void handleStatus() {
@@ -275,7 +514,7 @@ void handleStatus() {
 void handleSnapshot() {
   camera_fb_t *frame = captureFrameWithFlash();
   if (frame == nullptr) {
-    Serial.println("[SNAPSHOT] Kamerabild konnte nicht gelesen werden.");
+    logPrintln("[SNAPSHOT] Kamerabild konnte nicht gelesen werden.");
     server.send(500, "text/plain; charset=utf-8", "Kamerabild konnte nicht gelesen werden.");
     return;
   }
@@ -286,23 +525,26 @@ void handleSnapshot() {
 }
 
 void handleVerify() {
-  Serial.println("[VERIFY] Anfrage vom Browser empfangen.");
+  logPrintln("[VERIFY] Anfrage vom Browser empfangen.");
+  setAccessLedVerifying();
 
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[VERIFY] WLAN nicht verbunden.");
+  if (!ensureWifiConnected()) {
+    logPrintln("[VERIFY] WLAN nicht verbunden.");
+    blinkAccessError();
     server.send(503, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"ESP ist nicht mit dem WLAN verbunden.\"}");
     return;
   }
 
-  Serial.println("[VERIFY] Hole Kamerabild...");
+  logPrintln("[VERIFY] Hole Kamerabild...");
   camera_fb_t *frame = captureFrameWithFlash();
   if (frame == nullptr) {
-    Serial.println("[VERIFY] Kamerabild konnte nicht gelesen werden.");
+    logPrintln("[VERIFY] Kamerabild konnte nicht gelesen werden.");
+    blinkAccessError();
     server.send(500, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"Kamerabild konnte nicht gelesen werden.\"}");
     return;
   }
 
-  Serial.printf("[VERIFY] Kamerabild vorhanden. Groesse: %u Bytes\n", frame->len);
+  logPrintf("[VERIFY] Kamerabild vorhanden. Groesse: %u Bytes\n", frame->len);
 
   HTTPClient http;
   http.setTimeout(15000);
@@ -310,37 +552,58 @@ void handleVerify() {
   int statusCode = -1;
   String responseBody = "{\"ok\":false,\"error\":\"Unbekannter Fehler.\"}";
 
-  Serial.printf("[VERIFY] Sende POST an %s\n", kVerifierUrl);
+  logPrintf("[VERIFY] Sende POST an %s\n", kVerifierUrl);
   if (http.begin(kVerifierUrl)) {
     http.addHeader("Content-Type", "image/jpeg");
     statusCode = http.POST(frame->buf, frame->len);
-    Serial.printf("[VERIFY] POST abgeschlossen. Status: %d\n", statusCode);
+    logPrintf("[VERIFY] POST abgeschlossen. Status: %d\n", statusCode);
 
     if (statusCode > 0) {
       responseBody = http.getString();
-      Serial.printf("[VERIFY] Antwort vom Pi: %s\n", responseBody.c_str());
+      logPrintf("[VERIFY] Antwort vom Pi: %s\n", responseBody.c_str());
     } else {
-      Serial.printf("[VERIFY] HTTP-Fehler: %s\n", http.errorToString(statusCode).c_str());
+      logPrintf("[VERIFY] HTTP-Fehler: %s\n", http.errorToString(statusCode).c_str());
       responseBody = String("{\"ok\":false,\"error\":\"HTTP POST fehlgeschlagen: ") + http.errorToString(statusCode) + "\"}";
     }
 
     http.end();
   } else {
-    Serial.println("[VERIFY] Verifier-URL konnte nicht initialisiert werden.");
+    logPrintln("[VERIFY] Verifier-URL konnte nicht initialisiert werden.");
     responseBody = "{\"ok\":false,\"error\":\"Verifier-URL konnte nicht initialisiert werden.\"}";
   }
 
   esp_camera_fb_return(frame);
-  Serial.println("[VERIFY] Kamerabild freigegeben, sende Antwort an Browser.");
+  logPrintln("[VERIFY] Kamerabild freigegeben, sende Antwort an Browser.");
 
+  showAccessLedForResponse(responseBody);
   server.send(statusCode > 0 ? statusCode : 502, "application/json; charset=utf-8", responseBody);
-  Serial.println("[VERIFY] Browser-Antwort gesendet.");
+  logPrintln("[VERIFY] Browser-Antwort gesendet.");
 }
 
 void handleRingRequest() {
-  String responseBody = runRingWorkflow();
+  String responseBody = runRingWorkflowWithAccessLed();
   bool ok = jsonHasTrue(responseBody, "ok");
   server.send(ok ? 200 : 500, "application/json; charset=utf-8", responseBody);
+}
+
+void handleButton() {
+  bool reading = digitalRead(kButtonPin);
+  unsigned long now = millis();
+
+  if (reading != gLastButtonReading) {
+    gLastButtonChangeMs = now;
+    gLastButtonReading = reading;
+  }
+
+  if (now - gLastButtonChangeMs < kButtonDebounceMs || reading == gStableButtonState) {
+    return;
+  }
+
+  gStableButtonState = reading;
+  if (gStableButtonState == LOW) {
+    logPrintln("[BUTTON] Taster gedrueckt, starte Verifikation.");
+    runRingWorkflowWithAccessLed();
+  }
 }
 
 void startServer() {
@@ -351,7 +614,7 @@ void startServer() {
   server.on("/verify", HTTP_POST, handleVerify);
   server.on("/ring", HTTP_POST, handleRingRequest);
   server.begin();
-  Serial.println("Webserver gestartet.");
+  logPrintln("Webserver gestartet.");
 }
 
 }  // namespace
@@ -360,26 +623,29 @@ void setup() {
   // Serielle Ausgabe zum Debuggen starten.
   Serial.begin(115200);
   delay(1500);
-  Serial.println();
-  Serial.println("ESP32-CAM Live-Test startet...");
+  logPrintln();
+  logPrintln("ESP32-CAM Live-Test startet...");
 
   pinMode(kFlashLedPin, OUTPUT);
+  pinMode(kButtonPin, INPUT_PULLUP);
   setFlashLed(false);
+  initAccessLed();
 
   // Ohne funktionierende Kamera lohnt es sich nicht, WLAN und Server zu starten.
   if (!initCamera()) {
-    Serial.println("Bitte Pinout und Stromversorgung pruefen, dann Reset druecken.");
+    logPrintln("Bitte Pinout und Stromversorgung pruefen, dann Reset druecken.");
     return;
   }
 
   // Danach Netzwerk und Webserver einschalten.
   connectToWifi();
   startServer();
-  Serial.println("[RING] Fuehre automatischen Klingeltest nach Boot aus.");
-  runRingWorkflow();
+  logPrintf("[BUTTON] Bereit. Taster an GPIO%d gegen GND startet die Verifikation.\n", kButtonPin);
 }
 
 void loop() {
   // Eingehende Browser-Anfragen laufend bearbeiten.
   server.handleClient();
+  handleButton();
+  flushRemoteLogs();
 }

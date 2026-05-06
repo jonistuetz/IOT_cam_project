@@ -7,11 +7,12 @@ Prototyp einer smarten, vernetzten Tuerklingel mit `ESP32-CAM` als Kamera-/Gerae
 Der Prototyp bildet aktuell diesen Ablauf ab:
 
 1. Der `ESP32-CAM` bootet und verbindet sich mit dem WLAN.
-2. Direkt nach dem Start wird ein Klingelereignis simuliert.
+2. Ein externer Taster startet ein Klingel-/Verifikationsereignis.
 3. Der ESP wartet kurz, blinkt als Startsignal und nimmt dann `3` Bilder mit Blitz auf.
 4. Jedes Bild wird an den Raspberry Pi an `/api/ring-capture` geschickt.
 5. Der Raspberry Pi fuehrt fuer jedes Bild die Gesichtverifikation aus, speichert Snapshots und loggt das Gesamtereignis.
-6. Das Pi-Dashboard zeigt:
+6. Die externe LED zeigt das Ergebnis: gruen bei Zulassung, rot bei Ablehnung.
+7. Das Pi-Dashboard zeigt:
    - Livebild vom ESP (nur auf Knopfdruck über Dashboard)
    - letztes Klingelereignis
    - Burst-Snapshots
@@ -94,12 +95,15 @@ Aktuell nimmt der ESP an, dass der Pi unter `10.42.0.1:8000` laeuft.
 ### Aktuelle ESP-Logik
 
 - `GPIO4` wird als Blitz-LED genutzt
-- nach Boot wird automatisch ein Klingelereignis gestartet
+- `GPIO13` wird als externer Taster genutzt, gegen `GND` geschaltet und intern mit `INPUT_PULLUP` gelesen
+- `GPIO15` schaltet die rote LED fuer Ablehnung
+- `GPIO2` schaltet die gruene LED fuer Zulassung
+- nach Boot wartet der ESP auf einen Tastendruck oder einen manuellen API-Aufruf
+- waehrend der Verifikation leuchten Rot und gedimmtes Gruen als orange/gelbe Zwischenfarbe; bei technischem Abbruch blinkt Rot kurz und geht wieder aus
 - vor dem Burst gibt es `2` langsame Startblinksignale
+- vor jedem gespeicherten Foto verwirft der ESP alte Kameraframes, damit kein Bild aus dem vorherigen Ereignis im neuen Burst landet
 - danach werden `3` Bilder mit jeweils kurzem Blitz aufgenommen
-- die Bilder gehen an den Pi
-
-Der bisherige Board-Button wird **nicht mehr** als Eingabe genutzt. Spaeter soll ein externer Taster an einen separaten GPIO angeschlossen werden.
+- die Bilder gehen an den Pi; Zutritt gilt erst ab mindestens `2` Matches im 3er-Burst
 
 ## Dashboard auf dem Pi
 
@@ -133,6 +137,7 @@ Das Livebild aktualisiert sich **nur auf Knopfdruck**.
 - `POST /api/enroll` -> Referenzbild speichern
 - `POST /api/verify` -> einzelnes Bild verifizieren
 - `POST /api/ring-capture` -> einzelnes Burst-Bild innerhalb eines Klingelereignisses
+- `POST /api/esp-log` -> ESP-Logzeilen empfangen und im Pi-Terminal ausgeben
 - `GET /captures/<datei>` -> gespeicherte Burst-Bilder
 
 ### ESP
@@ -192,4 +197,5 @@ python face_verifier.py serve
 
 - Der Standard-Schwellwert fuer Cosine Similarity ist `0.42`.
 - Das Livebild im Pi-Dashboard nutzt aktuell eine fest hinterlegte ESP-IP (`DEFAULT_ESP_SNAPSHOT_URL`). Wenn sich die ESP-IP aendert, muss diese Konstante angepasst werden.
-- Der aktuelle Klingelablauf wird noch ueber `Reset = Boot = Klingeltest` simuliert. Ein echter externer Taster folgt spaeter.
+- `GPIO15` und `GPIO2` sind Boot-Strapping-Pins. Die LED-Beschaltung darf diese Pins beim Einschalten nicht hart auf `GND` oder `3.3V` ziehen.
+- `GPIO16` wird beim ESP32-CAM mit PSRAM nicht als Taster-Pin genutzt, weil er die Kamera-/PSRAM-Initialisierung stoeren kann.

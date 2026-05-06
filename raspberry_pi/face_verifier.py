@@ -21,6 +21,7 @@ DEFAULT_SIMILARITY_THRESHOLD = 0.42
 DEFAULT_DET_SIZE = (640, 640)
 DEFAULT_PERSON_ID = "jonathan"
 DEFAULT_ESP_SNAPSHOT_URL = "http://10.42.0.172/snapshot"
+DEFAULT_REQUIRED_MATCHES_FOR_ACCESS = 2
 
 DEFAULT_DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="de">
@@ -588,7 +589,8 @@ class FaceVerifierService:
       ).fetchone()
       received_images = int(event_row[0]) + 1
       matched_images = int(event_row[1]) + (1 if result.matched else 0)
-      event_matched = bool(event_row[2]) or result.matched
+      required_matches = min(DEFAULT_REQUIRED_MATCHES_FOR_ACCESS, total_images)
+      event_matched = matched_images >= required_matches
       current_best = event_row[3]
       best_similarity = current_best
       if result.similarity is not None and (best_similarity is None or result.similarity > best_similarity):
@@ -617,6 +619,7 @@ class FaceVerifierService:
         "error": result.error,
         "event_complete": received_images >= total_images,
         "matched_images": matched_images,
+        "required_matches": required_matches,
         "overall_matched": event_matched,
         "overall_best_similarity": best_similarity,
         "image_url": f"/captures/{image_filename}",
@@ -978,6 +981,14 @@ def create_app(service: FaceVerifierService) -> Flask:
 
     status_code = 200 if payload["ok"] else 422
     return jsonify(payload), status_code
+
+  @app.post("/api/esp-log")
+  def esp_log():
+    mac = request.headers.get("X-ESP-MAC", "unknown")
+    message = request.get_data(as_text=True).strip()
+    if message:
+      print(f"[ESP {mac}] {message}", flush=True)
+    return jsonify({"ok": True})
 
   def _read_image_bytes() -> Optional[bytes]:
     if "image" in request.files:

@@ -2,7 +2,11 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 #include <esp_camera.h>
+#include <esp_sleep.h>
 
 namespace {
 
@@ -21,16 +25,18 @@ const framesize_t kFrameSize = FRAMESIZE_QVGA;
 const int kJpegQuality = 12;
 const int kFrameBufferCount = 1;
 const int kFlashLedPin = 4;
-const int kButtonPin = 13;
-const int kAccessLedRedPin = 15;
+const int kButtonPin = 12;
+const int kI2cSdaPin = 13;
+const int kI2cSclPin = 14;
+const int kMotionSensorPin = 15;
+const uint64_t kDeepSleepWakeupPinMask = (1ULL << GPIO_NUM_12) | (1ULL << GPIO_NUM_15);
 const int kAccessLedGreenPin = 2;
-const int kAccessLedRedChannel = 2;
 const int kAccessLedGreenChannel = 3;
 const int kAccessLedPwmFrequency = 5000;
 const int kAccessLedPwmResolution = 8;
 const int kAccessLedMaxBrightness = 255;
-const int kAccessLedVerifyingRedBrightness = 255;
-const int kAccessLedVerifyingGreenBrightness = 70;
+const int kAccessLedVerifyingGreenBrightness = 90;
+const int kAccessLedWifiGreenBrightness = 70;
 const int kBurstImageCount = 3;
 const unsigned long kRingSettleDelayMs = 700;
 const unsigned long kFlashWarmupDelayMs = 120;
@@ -38,13 +44,20 @@ const unsigned long kBurstPauseMs = 180;
 const unsigned long kDiscardedFramePauseMs = 60;
 const unsigned long kButtonDebounceMs = 60;
 const unsigned long kRemoteLogRetryMs = 5000;
+const unsigned long kDisplayRetryMs = 10000;
+const unsigned long kMotionIdleBeforeSleepTimeoutMs = 30000;
+const unsigned long kMotionIdlePollMs = 250;
 const int kRemoteLogQueueSize = 24;
 const int kDiscardedFrameCount = 2;
 const int kRequiredMatchesForAccess = 2;
+const uint8_t kOledAddress = 0x3C;
+const int kOledWidth = 128;
+const int kOledHeight = 64;
 
 bool gRingInProgress = false;
-bool gLastButtonReading = HIGH;
-bool gStableButtonState = HIGH;
+bool gLastButtonReading = LOW;
+bool gStableButtonState = LOW;
+bool gLastMotionReading = LOW;
 unsigned long gLastButtonChangeMs = 0;
 String gRemoteLogQueue[kRemoteLogQueueSize];
 int gRemoteLogHead = 0;
@@ -52,8 +65,46 @@ int gRemoteLogCount = 0;
 String gRemoteLogLine;
 bool gRemoteLogSending = false;
 unsigned long gLastRemoteLogAttemptMs = 0;
+bool gDisplayAvailable = false;
+bool gDisplayInitAttempted = false;
+unsigned long gLastDisplayInitAttemptMs = 0;
+Adafruit_SSD1306 display(kOledWidth, kOledHeight, &Wire, -1);
 
 bool ensureWifiConnected();
+void logPrint(const String &text);
+void logPrintln(const String &text = "");
+void logPrintf(const char *format, ...);
+int jsonGetInt(const String &payload, const char *key, int fallback = -1);
+
+void logWakeupReason() {
+  esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
+  switch (wakeupCause) {
+    case ESP_SLEEP_WAKEUP_EXT1: {
+      uint64_t wakeupPins = esp_sleep_get_ext1_wakeup_status();
+      logPrintf("[SLEEP] Aufgewacht durch EXT1. Wakeup-Pins: 0x%llx", wakeupPins);
+      if ((wakeupPins & (1ULL << GPIO_NUM_12)) != 0) {
+        logPrint(" GPIO12/Taster");
+      }
+      if ((wakeupPins & (1ULL << GPIO_NUM_15)) != 0) {
+        logPrint(" GPIO15/Bewegung");
+      }
+      logPrintln();
+      break;
+    }
+    case ESP_SLEEP_WAKEUP_EXT0:
+      logPrintln("[SLEEP] Aufgewacht durch EXT0.");
+      break;
+    case ESP_SLEEP_WAKEUP_TIMER:
+      logPrintln("[SLEEP] Aufgewacht durch Timer.");
+      break;
+    case ESP_SLEEP_WAKEUP_UNDEFINED:
+      logPrintln("[SLEEP] Normaler Start, kein Deep-Sleep-Wakeup.");
+      break;
+    default:
+      logPrintf("[SLEEP] Aufwachgrund: %d\n", static_cast<int>(wakeupCause));
+      break;
+  }
+}
 
 void queueRemoteLogLine(const String &line) {
   if (line.length() == 0) {
@@ -137,7 +188,7 @@ void logPrint(const String &text) {
   appendRemoteLogText(text);
 }
 
-void logPrintln(const String &text = "") {
+void logPrintln(const String &text) {
   Serial.println(text);
   appendRemoteLogText(text);
   appendRemoteLogText("\n");
@@ -153,35 +204,112 @@ void logPrintf(const char *format, ...) {
   appendRemoteLogText(buffer);
 }
 
+bool i2cDeviceResponds(uint8_t address) {
+  Wire.beginTransmission(address);
+  return Wire.endTransmission() == 0;
+}
+
+void displayShowText(const String &message, uint8_t textSize = 1) {
+  if (!gDisplayAvailable) {
+    logPrintln("[OLED] Kein SSD1306-OLED verfuegbar.");
+    return;
+  }
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(textSize);
+  display.setTextWrap(true);
+  display.setCursor(0, 0);
+  display.print(message);
+  display.display();
+  logPrintf("[OLED] Zeige Text: %s\n", message.c_str());
+}
+
+void displayShowWelcome() {
+  displayShowText("Herzlich\nWillkommen", 1);
+}
+
+void displayTurnOff() {
+  if (!gDisplayAvailable) {
+    return;
+  }
+
+  display.clearDisplay();
+  display.display();
+  display.ssd1306_command(SSD1306_DISPLAYOFF);
+  logPrintln("[OLED] Display ausgeschaltet.");
+}
+
+void initI2cDisplay() {
+  gDisplayInitAttempted = true;
+  gLastDisplayInitAttemptMs = millis();
+  Wire.begin(kI2cSdaPin, kI2cSclPin);
+  Wire.setClock(100000);
+  Wire.setTimeOut(50);
+
+  if (!i2cDeviceResponds(kOledAddress)) {
+    gDisplayAvailable = false;
+    logPrintln("[OLED] Kein SSD1306-OLED auf 0x3C gefunden.");
+    return;
+  }
+
+  gDisplayAvailable = display.begin(SSD1306_SWITCHCAPVCC, kOledAddress);
+  if (!gDisplayAvailable) {
+    logPrintln("[OLED] SSD1306-Initialisierung fehlgeschlagen.");
+    return;
+  }
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setTextWrap(true);
+  display.display();
+  display.ssd1306_command(SSD1306_DISPLAYON);
+  logPrintf("[OLED] SSD1306-OLED auf 0x%02x bereit. SDA GPIO%d, SCL GPIO%d.\n",
+            kOledAddress,
+            kI2cSdaPin,
+            kI2cSclPin);
+}
+
+void ensureI2cDisplayReady() {
+  if (gDisplayAvailable) {
+    return;
+  }
+  if (gDisplayInitAttempted && millis() - gLastDisplayInitAttemptMs < kDisplayRetryMs) {
+    return;
+  }
+
+  initI2cDisplay();
+}
+
 void setFlashLed(bool enabled) {
   digitalWrite(kFlashLedPin, enabled ? HIGH : LOW);
 }
 
-void setAccessLedBrightness(int redBrightness, int greenBrightness) {
-  ledcWrite(kAccessLedRedChannel, constrain(redBrightness, 0, kAccessLedMaxBrightness));
+void setAccessLedBrightness(int greenBrightness) {
   ledcWrite(kAccessLedGreenChannel, constrain(greenBrightness, 0, kAccessLedMaxBrightness));
 }
 
-void setAccessLed(bool redEnabled, bool greenEnabled) {
-  setAccessLedBrightness(
-      redEnabled ? kAccessLedMaxBrightness : 0,
-      greenEnabled ? kAccessLedMaxBrightness : 0);
+void setAccessLed(bool greenEnabled) {
+  setAccessLedBrightness(greenEnabled ? kAccessLedMaxBrightness : 0);
 }
 
 void setAccessLedVerifying() {
-  setAccessLedBrightness(kAccessLedVerifyingRedBrightness, kAccessLedVerifyingGreenBrightness);
+  setAccessLedBrightness(kAccessLedVerifyingGreenBrightness);
+}
+
+void setAccessLedWifiConnecting(bool enabled) {
+  setAccessLedBrightness(enabled ? kAccessLedWifiGreenBrightness : 0);
 }
 
 void initAccessLed() {
-  ledcSetup(kAccessLedRedChannel, kAccessLedPwmFrequency, kAccessLedPwmResolution);
   ledcSetup(kAccessLedGreenChannel, kAccessLedPwmFrequency, kAccessLedPwmResolution);
-  ledcAttachPin(kAccessLedRedPin, kAccessLedRedChannel);
   ledcAttachPin(kAccessLedGreenPin, kAccessLedGreenChannel);
-  setAccessLed(false, false);
+  setAccessLed(false);
 }
 
 void showVerificationResult(bool admitted) {
-  setAccessLed(!admitted, admitted);
+  setAccessLed(admitted);
 }
 
 void blinkFlashLed(int blinkCount, unsigned long onMs, unsigned long offMs) {
@@ -230,10 +358,23 @@ bool responseHasVerificationResult(const String &payload) {
 
 void blinkAccessError() {
   for (int i = 0; i < 3; ++i) {
-    setAccessLed(true, false);
+    setAccessLed(true);
     delay(120);
-    setAccessLed(false, false);
+    setAccessLed(false);
     delay(120);
+  }
+}
+
+void blinkVerificationOutcome(bool admitted) {
+  const int blinkCount = admitted ? 5 : 12;
+  const unsigned long onMs = admitted ? 450 : 100;
+  const unsigned long offMs = admitted ? 450 : 100;
+
+  for (int i = 0; i < blinkCount; ++i) {
+    setAccessLed(true);
+    delay(onMs);
+    setAccessLed(false);
+    delay(offMs);
   }
 }
 
@@ -249,7 +390,92 @@ void showAccessLedForResponse(const String &payload) {
   logPrintf("[ACCESS] Ergebnis: %s\n", admitted ? "Zulassung" : "Ablehnung");
 }
 
-int jsonGetInt(const String &payload, const char *key, int fallback = -1) {
+void displayShowVerificationResult(const String &payload) {
+  if (!responseHasVerificationResult(payload)) {
+    displayShowText("Verifikation\nfehlgeschlagen", 1);
+    return;
+  }
+
+  bool admitted = responseAllowsAccess(payload);
+  bool faceDetectedInBurst = jsonHasTrue(payload, "face_detected");
+  int detectedFaceImages = jsonGetInt(payload, "detected_face_images", -1);
+  int detectedFaces = jsonGetInt(payload, "detected_faces", -1);
+  int matchedImages = jsonGetInt(payload, "matched_images", -1);
+
+  String message;
+  if (detectedFaceImages == 0 || (!faceDetectedInBurst && detectedFaceImages < 0 && detectedFaces == 0)) {
+    message = "Kein Gesicht\n";
+  } else if (faceDetectedInBurst || detectedFaceImages > 0 || detectedFaces > 0) {
+    message = "Gesicht erkannt\n";
+  } else {
+    message = "Gesicht geprueft\n";
+  }
+
+  message += admitted ? "Zutritt erlaubt" : "Zutritt abgelehnt";
+  if (matchedImages >= 0) {
+    message += "\nMatches: ";
+    message += matchedImages;
+    message += "/";
+    message += kBurstImageCount;
+  }
+
+  displayShowText(message, 1);
+}
+
+void waitForMotionIdleBeforeSleep() {
+  unsigned long startMillis = millis();
+  while ((digitalRead(kMotionSensorPin) == HIGH || digitalRead(kButtonPin) == HIGH) &&
+         millis() - startMillis < kMotionIdleBeforeSleepTimeoutMs) {
+    logPrint(".");
+    flushRemoteLogs();
+    delay(kMotionIdlePollMs);
+  }
+  logPrintln();
+}
+
+void enterDeepSleepUntilMotion() {
+  logPrintf("[SLEEP] Warte auf LOW an GPIO%d/Bewegung und GPIO%d/Taster vor Deep Sleep",
+            kMotionSensorPin,
+            kButtonPin);
+  waitForMotionIdleBeforeSleep();
+
+  if (digitalRead(kMotionSensorPin) == HIGH || digitalRead(kButtonPin) == HIGH) {
+    logPrintln("[SLEEP] Wakeup-Pin bleibt HIGH, Deep Sleep wird uebersprungen.");
+    return;
+  }
+
+  displayShowText("Schlafmodus\nBewegung/Taster\nweckt");
+  logPrintf("[SLEEP] Kurz vor Deep Sleep. Wakeup bei HIGH an GPIO%d/Bewegung oder GPIO%d/Taster.\n",
+            kMotionSensorPin,
+            kButtonPin);
+  flushRemoteLogs();
+  delay(1200);
+  displayTurnOff();
+
+  setAccessLed(false);
+  setFlashLed(false);
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  esp_sleep_enable_ext1_wakeup(kDeepSleepWakeupPinMask, ESP_EXT1_WAKEUP_ANY_HIGH);
+  esp_deep_sleep_start();
+}
+
+void finishRingSession(const String &responseBody) {
+  if (!responseHasVerificationResult(responseBody)) {
+    displayShowVerificationResult(responseBody);
+    blinkAccessError();
+    enterDeepSleepUntilMotion();
+    return;
+  }
+
+  bool admitted = responseAllowsAccess(responseBody);
+  displayShowVerificationResult(responseBody);
+  logPrintf("[ACCESS] Blinke Ergebnis: %s\n", admitted ? "langsames Blinken / Zulassung" : "schnelles Blinken / Ablehnung");
+  blinkVerificationOutcome(admitted);
+  enterDeepSleepUntilMotion();
+}
+
+int jsonGetInt(const String &payload, const char *key, int fallback) {
   String pattern = String("\"") + key + "\":";
   int start = payload.indexOf(pattern);
   if (start < 0) {
@@ -354,6 +580,7 @@ String runRingWorkflow() {
   bool allSuccessful = true;
   int eventId = -1;
   String lastResponse = "{\"ok\":false,\"error\":\"Keine Antwort vom Pi erhalten.\"}";
+  int detectedFaceImages = 0;
 
   for (int sequence = 1; sequence <= kBurstImageCount; ++sequence) {
     logPrintf("[RING] Erfasse Bild %d/%d ...\n", sequence, kBurstImageCount);
@@ -387,6 +614,9 @@ String runRingWorkflow() {
     if (captureMatched) {
       matchedImages++;
     }
+    if (jsonGetInt(lastResponse, "detected_faces", 0) > 0) {
+      detectedFaceImages++;
+    }
     delay(kBurstPauseMs);
   }
 
@@ -400,6 +630,8 @@ String runRingWorkflow() {
   String summary = String("{\"ok\":true,\"event_id\":") + eventId +
                    ",\"matched_images\":" + matchedImages +
                    ",\"required_matches\":" + kRequiredMatchesForAccess +
+                   ",\"face_detected\":" + (detectedFaceImages > 0 ? "true" : "false") +
+                   ",\"detected_face_images\":" + detectedFaceImages +
                    ",\"overall_matched\":" + (accessGranted ? "true" : "false") +
                    ",\"last_response\":" + lastResponse + "}";
   logPrintf("[RING] Klingelereignis abgeschlossen: %s\n", summary.c_str());
@@ -408,9 +640,7 @@ String runRingWorkflow() {
 
 String runRingWorkflowWithAccessLed() {
   setAccessLedVerifying();
-  String responseBody = runRingWorkflow();
-  showAccessLedForResponse(responseBody);
-  return responseBody;
+  return runRingWorkflow();
 }
 
 bool initCamera() {
@@ -476,14 +706,19 @@ bool connectToWifi() {
   logPrint("Verbinde mit WLAN");
 
   const unsigned long startMillis = millis();
+  bool wifiBlinkEnabled = false;
   while (WiFi.status() != WL_CONNECTED && millis() - startMillis < 20000) {
-    delay(500);
+    wifiBlinkEnabled = !wifiBlinkEnabled;
+    setAccessLedWifiConnecting(wifiBlinkEnabled);
     logPrint(".");
+    delay(500);
   }
+  setAccessLedWifiConnecting(false);
   logPrintln();
 
   if (WiFi.status() != WL_CONNECTED) {
     logPrintln("WLAN-Verbindung fehlgeschlagen.");
+    blinkAccessError();
     return false;
   }
 
@@ -491,6 +726,7 @@ bool connectToWifi() {
   logPrintln(WiFi.localIP().toString());
   logPrint("Verifier-Ziel: ");
   logPrintln(kVerifierUrl);
+  setAccessLed(true);
   flushRemoteLogs();
   return true;
 }
@@ -584,6 +820,8 @@ void handleRingRequest() {
   String responseBody = runRingWorkflowWithAccessLed();
   bool ok = jsonHasTrue(responseBody, "ok");
   server.send(ok ? 200 : 500, "application/json; charset=utf-8", responseBody);
+  delay(250);
+  finishRingSession(responseBody);
 }
 
 void handleButton() {
@@ -600,10 +838,27 @@ void handleButton() {
   }
 
   gStableButtonState = reading;
-  if (gStableButtonState == LOW) {
+  if (gStableButtonState == HIGH) {
     logPrintln("[BUTTON] Taster gedrueckt, starte Verifikation.");
-    runRingWorkflowWithAccessLed();
+    ensureI2cDisplayReady();
+    displayShowWelcome();
+    delay(800);
+    displayShowText("Pruefe\nGesicht...", 1);
+    String responseBody = runRingWorkflowWithAccessLed();
+    finishRingSession(responseBody);
   }
+}
+
+void handleMotionSensor() {
+  bool reading = digitalRead(kMotionSensorPin);
+  if (reading == gLastMotionReading) {
+    return;
+  }
+
+  gLastMotionReading = reading;
+  logPrintf("[MOTION] HC-SR501 OUT an GPIO%d: %s\n",
+            kMotionSensorPin,
+            reading == HIGH ? "Bewegung erkannt" : "keine Bewegung");
 }
 
 void startServer() {
@@ -625,11 +880,14 @@ void setup() {
   delay(1500);
   logPrintln();
   logPrintln("ESP32-CAM Live-Test startet...");
+  logWakeupReason();
 
   pinMode(kFlashLedPin, OUTPUT);
-  pinMode(kButtonPin, INPUT_PULLUP);
+  pinMode(kButtonPin, INPUT);
+  pinMode(kMotionSensorPin, INPUT);
   setFlashLed(false);
   initAccessLed();
+  gLastMotionReading = digitalRead(kMotionSensorPin);
 
   // Ohne funktionierende Kamera lohnt es sich nicht, WLAN und Server zu starten.
   if (!initCamera()) {
@@ -640,12 +898,14 @@ void setup() {
   // Danach Netzwerk und Webserver einschalten.
   connectToWifi();
   startServer();
-  logPrintf("[BUTTON] Bereit. Taster an GPIO%d gegen GND startet die Verifikation.\n", kButtonPin);
+  initI2cDisplay();
+  logPrintf("[BUTTON] Bereit. Taster an GPIO%d startet die Verifikation.\n", kButtonPin);
 }
 
 void loop() {
   // Eingehende Browser-Anfragen laufend bearbeiten.
   server.handleClient();
   handleButton();
+  handleMotionSensor();
   flushRemoteLogs();
 }

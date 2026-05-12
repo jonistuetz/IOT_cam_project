@@ -11,8 +11,9 @@ Der Prototyp bildet aktuell diesen Ablauf ab:
 3. Der ESP wartet kurz, blinkt als Startsignal und nimmt dann `3` Bilder mit Blitz auf.
 4. Jedes Bild wird an den Raspberry Pi an `/api/ring-capture` geschickt.
 5. Der Raspberry Pi fuehrt fuer jedes Bild die Gesichtverifikation aus, speichert Snapshots und loggt das Gesamtereignis.
-6. Die externe LED zeigt das Ergebnis: gruen bei Zulassung, rot bei Ablehnung.
-7. Das Pi-Dashboard zeigt:
+6. Die externe LED blinkt nach der Verifikation langsam bei Zulassung und schnell bei Ablehnung.
+7. Nach einer abgeschlossenen Klingelsession geht der ESP in Deep Sleep und wacht bei Bewegung am HC-SR501 wieder auf.
+8. Das Pi-Dashboard zeigt:
    - Livebild vom ESP (nur auf Knopfdruck über Dashboard)
    - letztes Klingelereignis
    - Burst-Snapshots
@@ -95,11 +96,18 @@ Aktuell nimmt der ESP an, dass der Pi unter `10.42.0.1:8000` laeuft.
 ### Aktuelle ESP-Logik
 
 - `GPIO4` wird als Blitz-LED genutzt
-- `GPIO13` wird als externer Taster genutzt, gegen `GND` geschaltet und intern mit `INPUT_PULLUP` gelesen
-- `GPIO15` schaltet die rote LED fuer Ablehnung
-- `GPIO2` schaltet die gruene LED fuer Zulassung
+- `GPIO12` wird als externer Taster genutzt, aktiv `HIGH` geschaltet und mit externem Pulldown nach `GND` stabilisiert
+- `GPIO13` wird als I2C-SDA fuer Display und Bewegungssensor genutzt
+- `GPIO14` wird als I2C-SCL fuer Display und Bewegungssensor genutzt
+- `GPIO15` liest das OUT-Signal des HC-SR501-Bewegungssensors
+- `GPIO2` schaltet die gruene Status-LED fuer WLAN, Pruefung und Ergebnis
+- waehrend der WLAN-Verbindung blinkt die gruene LED gedimmt als Start-/Verbindungsfeedback; nach erfolgreicher WLAN-Verbindung leuchtet sie dauerhaft
+- nach Tastendruck wird auf dem Joy-IT SBC-OLED01 / SSD1306-OLED mit Adresse `0x3C` ueber `Adafruit_SSD1306` testweise `Herzlich Willkommen` angezeigt
 - nach Boot wartet der ESP auf einen Tastendruck oder einen manuellen API-Aufruf
-- waehrend der Verifikation leuchten Rot und gedimmtes Gruen als orange/gelbe Zwischenfarbe; bei technischem Abbruch blinkt Rot kurz und geht wieder aus
+- waehrend der Verifikation leuchtet Gruen gedimmt; nach der Verifikation blinkt Gruen langsam bei Zulassung und schnell bei Ablehnung
+- nach einer abgeschlossenen Klingelsession wird Deep Sleep aktiviert, sobald HC-SR501-OUT und Taster wieder `LOW` sind
+- das OLED zeigt waehrend der Pruefung und nach der Verifikation Statusmeldungen zu Gesichtserkennung und Zutrittsentscheidung
+- direkt vor Deep Sleep wird das OLED per SSD1306-Display-Off-Befehl ausgeschaltet
 - vor dem Burst gibt es `2` langsame Startblinksignale
 - vor jedem gespeicherten Foto verwirft der ESP alte Kameraframes, damit kein Bild aus dem vorherigen Ereignis im neuen Burst landet
 - danach werden `3` Bilder mit jeweils kurzem Blitz aufgenommen
@@ -193,9 +201,14 @@ python face_verifier.py serve
 - auf den ESP32-CAM flashen
 - seriellen Monitor beobachten
 
+PlatformIO installiert die ESP-Abhaengigkeiten aus `lib_deps` automatisch beim Build. Fuer das OLED-Display werden aktuell `Adafruit SSD1306` und `Adafruit GFX Library` verwendet.
+
 ## Hinweise
 
 - Der Standard-Schwellwert fuer Cosine Similarity ist `0.42`.
 - Das Livebild im Pi-Dashboard nutzt aktuell eine fest hinterlegte ESP-IP (`DEFAULT_ESP_SNAPSHOT_URL`). Wenn sich die ESP-IP aendert, muss diese Konstante angepasst werden.
-- `GPIO15` und `GPIO2` sind Boot-Strapping-Pins. Die LED-Beschaltung darf diese Pins beim Einschalten nicht hart auf `GND` oder `3.3V` ziehen.
+- `GPIO15`, `GPIO12` und `GPIO2` sind Boot-Strapping-Pins. Externe Beschaltungen duerfen diese Pins beim Einschalten nicht hart auf `GND` oder `3.3V` ziehen.
+- `GPIO15` und `GPIO12` sind RTC-GPIOs und wecken den ESP32 per Deep-Sleep-Wakeup, wenn der HC-SR501 `OUT` oder der Taster `HIGH` wird.
+- Fuer den Taster-Wakeup muss der Taster `GPIO12` auf `3.3V` ziehen; ein externer Pulldown, z. B. `100k` nach `GND`, haelt den Pin im Ruhezustand `LOW`.
+- `GPIO12` ist ebenfalls ein Boot-Strapping-Pin. Der Taster darf beim Einschalten nicht gedrueckt sein.
 - `GPIO16` wird beim ESP32-CAM mit PSRAM nicht als Taster-Pin genutzt, weil er die Kamera-/PSRAM-Initialisierung stoeren kann.

@@ -13,8 +13,8 @@ namespace {
 // WLAN-Zugangsdaten und Ziel-URL des Raspberry-Pi-Verifikationsdiensts.
 const char kWifiSsid[] = "hs-iot";
 const char kWifiPassword[] = "hsiot2026";
-const char kVerifierUrl[] = "http://10.42.0.1:8000/api/verify?person_id=jonathan";
-const char kRingCaptureBaseUrl[] = "http://10.42.0.1:8000/api/ring-capture?person_id=jonathan";
+const char kVerifierUrl[] = "http://10.42.0.1:8000/api/verify";
+const char kRingCaptureBaseUrl[] = "http://10.42.0.1:8000/api/ring-capture";
 const char kLogUrl[] = "http://10.42.0.1:8000/api/esp-log";
 
 // HTTP-Server auf Port 80 für die Geräte-API.
@@ -594,9 +594,10 @@ String runRingWorkflow() {
 
     logPrintf("[RING] Bild %d vorhanden. Groesse: %u Bytes\n", sequence, frame->len);
 
-    String url = String(kRingCaptureBaseUrl) +
-                 "&sequence=" + sequence +
-                 "&total=" + kBurstImageCount;
+    String url = String(kRingCaptureBaseUrl);
+    url += url.indexOf('?') >= 0 ? "&" : "?";
+    url += "sequence=" + sequence;
+    url += "&total=" + String(kBurstImageCount);
     if (eventId >= 0) {
       url += "&event_id=" + String(eventId);
     }

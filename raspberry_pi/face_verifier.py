@@ -19,7 +19,7 @@ DEFAULT_CAPTURES_DIR = Path(__file__).with_name("captures")
 DEFAULT_MODEL_NAME = "buffalo_sc"
 DEFAULT_SIMILARITY_THRESHOLD = 0.42
 DEFAULT_DET_SIZE = (640, 640)
-DEFAULT_PERSON_ID = "jonathan"
+UNKNOWN_PERSON_ID = "unknown"
 DEFAULT_ESP_SNAPSHOT_URL = "http://10.42.0.172/snapshot"
 DEFAULT_REQUIRED_MATCHES_FOR_ACCESS = 2
 
@@ -342,6 +342,10 @@ class FaceVerifierService:
     self._face_app: Optional[FaceAnalysis] = None
     self.captures_dir.mkdir(parents=True, exist_ok=True)
 
+  @staticmethod
+  def _debug(message: str) -> None:
+    print(f"[face-verifier] {message}", flush=True)
+
   def init_db(self) -> None:
     with sqlite3.connect(self.db_path) as connection:
       connection.execute(
@@ -436,19 +440,29 @@ class FaceVerifierService:
         "embedding_dim": int(embedding.shape[0]),
     }
 
-  def verify(self, person_id: str, image_bytes: bytes, threshold: Optional[float] = None) -> VerificationResult:
+  def verify(
+      self,
+      person_id: Optional[str],
+      image_bytes: bytes,
+      threshold: Optional[float] = None,
+  ) -> VerificationResult:
     similarity_threshold = self.similarity_threshold if threshold is None else threshold
+    requested_person_id = person_id
+    self._debug(
+        f"verify start requested_person_id={requested_person_id or 'ALL'} threshold={similarity_threshold:.3f}"
+    )
 
     try:
       image = self._decode_image(image_bytes)
       faces = self._get_face_app().get(image)
       if len(faces) == 0:
+        self._debug("verify result no face detected")
         result = VerificationResult(
-            person_id=person_id,
+            person_id=requested_person_id or UNKNOWN_PERSON_ID,
             matched=False,
             similarity=None,
             threshold=similarity_threshold,
-            reference_count=self._reference_count(person_id),
+            reference_count=self._reference_count(requested_person_id) if requested_person_id else 0,
             detected_faces=0,
             error="Kein Gesicht erkannt.",
         )
@@ -459,41 +473,91 @@ class FaceVerifierService:
         faces.sort(key=self._face_area, reverse=True)
 
       probe_embedding = self._get_normalized_embedding(faces[0])
-      references = self._load_reference_embeddings(person_id)
+      if requested_person_id:
+        candidate_people = [requested_person_id]
+      else:
+        candidate_people = self.list_person_ids()
+      self._debug(f"verify candidates={candidate_people}")
 
-      if references.size == 0:
+      if not candidate_people:
+        self._debug("verify aborted because no candidates are enrolled")
         result = VerificationResult(
-            person_id=person_id,
+            person_id=requested_person_id or UNKNOWN_PERSON_ID,
             matched=False,
             similarity=None,
             threshold=similarity_threshold,
             reference_count=0,
             detected_faces=len(faces),
-            error="Keine Referenz-Embeddings fuer diese Person gespeichert.",
+            error="Keine Referenz-Embeddings gespeichert.",
         )
         self._log_verification(result)
         return result
 
-      similarities = np.dot(references, probe_embedding)
-      best_similarity = float(np.max(similarities))
+      best_person_id = requested_person_id or UNKNOWN_PERSON_ID
+      best_similarity: Optional[float] = None
+      best_reference_count = 0
+      candidate_summaries: list[str] = []
+
+      for candidate_person_id in candidate_people:
+        references = self._load_reference_embeddings(candidate_person_id)
+        if references.size == 0:
+          candidate_summaries.append(f"{candidate_person_id}:refs=0")
+          continue
+
+        similarities = np.dot(references, probe_embedding)
+        candidate_best_similarity = float(np.max(similarities))
+        candidate_summaries.append(
+            f"{candidate_person_id}:refs={len(references)} best={candidate_best_similarity:.4f}"
+        )
+        if best_similarity is None or candidate_best_similarity > best_similarity:
+          best_similarity = candidate_best_similarity
+          best_person_id = candidate_person_id
+          best_reference_count = len(references)
+
+      self._debug("verify candidate_results=" + ", ".join(candidate_summaries))
+
+      if best_similarity is None:
+        self._debug("verify finished without any usable reference embeddings")
+        result = VerificationResult(
+            person_id=requested_person_id or UNKNOWN_PERSON_ID,
+            matched=False,
+            similarity=None,
+            threshold=similarity_threshold,
+            reference_count=0,
+            detected_faces=len(faces),
+            error=(
+                "Keine Referenz-Embeddings fuer diese Person gespeichert."
+                if requested_person_id
+                else "Keine gueltigen Referenz-Embeddings gespeichert."
+            ),
+        )
+        self._log_verification(result)
+        return result
+
       matched = best_similarity >= similarity_threshold
+      self._debug(
+          "verify winner="
+          f"{best_person_id} similarity={best_similarity:.4f} "
+          f"threshold={similarity_threshold:.3f} matched={matched}"
+      )
       result = VerificationResult(
-          person_id=person_id,
+          person_id=best_person_id,
           matched=matched,
           similarity=best_similarity,
           threshold=similarity_threshold,
-          reference_count=len(references),
+          reference_count=best_reference_count,
           detected_faces=len(faces),
       )
       self._log_verification(result)
       return result
     except Exception as exc:  # pragma: no cover - defensive logging for prototype runtime
+      self._debug(f"verify exception: {exc}")
       result = VerificationResult(
-          person_id=person_id,
+          person_id=requested_person_id or UNKNOWN_PERSON_ID,
           matched=False,
           similarity=None,
           threshold=similarity_threshold,
-          reference_count=self._reference_count(person_id),
+          reference_count=self._reference_count(requested_person_id) if requested_person_id else 0,
           detected_faces=0,
           error=str(exc),
       )
@@ -525,7 +589,7 @@ class FaceVerifierService:
 
   def handle_ring_capture(
       self,
-      person_id: str,
+      person_id: Optional[str],
       image_bytes: bytes,
       sequence_index: int,
       total_images: int,
@@ -537,6 +601,11 @@ class FaceVerifierService:
     if total_images < 1:
       raise ValueError("total_images muss >= 1 sein.")
 
+    self._debug(
+        f"ring_capture start requested_person_id={person_id or 'ALL'} "
+        f"sequence={sequence_index}/{total_images} event_id={event_id}"
+    )
+
     result = self.verify(person_id=person_id, image_bytes=image_bytes, threshold=threshold)
     now = self._utc_now()
 
@@ -547,7 +616,7 @@ class FaceVerifierService:
             INSERT INTO ring_events (person_id, total_images, received_images, matched_images, matched, best_similarity, created_at, updated_at)
             VALUES (?, ?, 0, 0, 0, NULL, ?, ?)
             """,
-            (person_id, total_images, now, now),
+            (result.person_id, total_images, now, now),
         )
         event_id = int(cursor.lastrowid)
 
@@ -599,12 +668,18 @@ class FaceVerifierService:
       connection.execute(
           """
           UPDATE ring_events
-          SET received_images = ?, matched_images = ?, matched = ?, best_similarity = ?, updated_at = ?
+          SET person_id = ?, received_images = ?, matched_images = ?, matched = ?, best_similarity = ?, updated_at = ?
           WHERE id = ?
           """,
-          (received_images, matched_images, int(event_matched), best_similarity, now, event_id),
+          (result.person_id, received_images, matched_images, int(event_matched), best_similarity, now, event_id),
       )
       connection.commit()
+
+    self._debug(
+        f"ring_capture result event_id={event_id} winner={result.person_id} "
+        f"matched={result.matched} similarity={result.similarity} "
+        f"matched_images={matched_images}/{required_matches} overall_matched={event_matched}"
+    )
 
     return {
         "ok": result.error is None,
@@ -920,8 +995,6 @@ def create_app(service: FaceVerifierService) -> Flask:
         or request.headers.get("X-Person-Id")
         or request.args.get("person_id")
     )
-    if not person_id:
-      return jsonify({"ok": False, "error": "person_id fehlt."}), 400
 
     image_bytes = _read_image_bytes()
     if image_bytes is None:
@@ -954,7 +1027,6 @@ def create_app(service: FaceVerifierService) -> Flask:
         request.form.get("person_id")
         or request.headers.get("X-Person-Id")
         or request.args.get("person_id")
-        or DEFAULT_PERSON_ID
     )
     image_bytes = _read_image_bytes()
     if image_bytes is None:
@@ -1027,7 +1099,7 @@ def parse_args() -> argparse.Namespace:
   enroll_parser.add_argument("--note")
 
   verify_parser = subparsers.add_parser("verify-image", help="Ein Bild lokal gegen Referenzen pruefen.")
-  verify_parser.add_argument("--person-id", required=True)
+  verify_parser.add_argument("--person-id", help="Optional: nur gegen diese Person pruefen.")
   verify_parser.add_argument("--image", required=True)
 
   return parser.parse_args()

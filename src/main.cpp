@@ -16,6 +16,7 @@ const char kWifiPassword[] = "hsiot2026";
 const char kVerifierUrl[] = "http://10.42.0.1:8000/api/verify";
 const char kRingCaptureBaseUrl[] = "http://10.42.0.1:8000/api/ring-capture";
 const char kLogUrl[] = "http://10.42.0.1:8000/api/esp-log";
+const char kRingDecisionBaseUrl[] = "http://10.42.0.1:8000/api/ring-decision";
 
 // HTTP-Server auf Port 80 für die Geräte-API.
 WebServer server(80);
@@ -47,6 +48,8 @@ const unsigned long kRemoteLogRetryMs = 5000;
 const unsigned long kDisplayRetryMs = 10000;
 const unsigned long kMotionIdleBeforeSleepTimeoutMs = 30000;
 const unsigned long kMotionIdlePollMs = 250;
+const unsigned long kTelegramDecisionPollIntervalMs = 2000;
+const unsigned long kTelegramDecisionTimeoutMs = 90000;
 const int kRemoteLogQueueSize = 24;
 const int kDiscardedFrameCount = 2;
 const int kRequiredMatchesForAccess = 2;
@@ -75,6 +78,8 @@ void logPrint(const String &text);
 void logPrintln(const String &text = "");
 void logPrintf(const char *format, ...);
 int jsonGetInt(const String &payload, const char *key, int fallback = -1);
+String jsonGetString(const String &payload, const char *key, const String &fallback = "");
+void waitForTelegramDecision(int eventId);
 
 void logWakeupReason() {
   esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
@@ -411,7 +416,7 @@ void displayShowVerificationResult(const String &payload) {
     message = "Gesicht geprueft\n";
   }
 
-  message += admitted ? "Zutritt erlaubt" : "Zutritt abgelehnt";
+  message += admitted ? "Empfehlung:\nZulassen" : "Empfehlung:\nAblehnen";
   if (matchedImages >= 0) {
     message += "\nMatches: ";
     message += matchedImages;
@@ -420,6 +425,27 @@ void displayShowVerificationResult(const String &payload) {
   }
 
   displayShowText(message, 1);
+}
+
+void displayShowRemoteDecision(const String &decision) {
+  if (decision == "approve") {
+    displayShowText("Telegram\nfreigegeben", 1);
+    return;
+  }
+  if (decision == "deny") {
+    displayShowText("Telegram\nabgelehnt", 1);
+    return;
+  }
+  displayShowText("Warte auf\nTelegram...", 1);
+}
+
+void displayShowNoTelegramDecision() {
+  displayShowText("Keine Antwort\nvia Telegram", 1);
+}
+
+void showRemoteDecision(const String &decision) {
+  displayShowRemoteDecision(decision);
+  blinkVerificationOutcome(decision == "approve");
 }
 
 void waitForMotionIdleBeforeSleep() {
@@ -468,10 +494,9 @@ void finishRingSession(const String &responseBody) {
     return;
   }
 
-  bool admitted = responseAllowsAccess(responseBody);
+  int eventId = jsonGetInt(responseBody, "event_id", -1);
   displayShowVerificationResult(responseBody);
-  logPrintf("[ACCESS] Blinke Ergebnis: %s\n", admitted ? "langsames Blinken / Zulassung" : "schnelles Blinken / Ablehnung");
-  blinkVerificationOutcome(admitted);
+  waitForTelegramDecision(eventId);
   enterDeepSleepUntilMotion();
 }
 
@@ -493,6 +518,20 @@ int jsonGetInt(const String &payload, const char *key, int fallback) {
     return fallback;
   }
   return payload.substring(start, end).toInt();
+}
+
+String jsonGetString(const String &payload, const char *key, const String &fallback) {
+  String pattern = String("\"") + key + "\":\"";
+  int start = payload.indexOf(pattern);
+  if (start < 0) {
+    return fallback;
+  }
+  start += pattern.length();
+  int end = payload.indexOf('"', start);
+  if (end < 0) {
+    return fallback;
+  }
+  return payload.substring(start, end);
 }
 
 camera_fb_t *captureFrameWithFlash() {
@@ -556,6 +595,66 @@ String postFrameToPi(
 
   http.end();
   return responseBody;
+}
+
+String pollRingDecisionFromPi(int eventId) {
+  if (eventId < 0) {
+    return "unavailable";
+  }
+  if (!ensureWifiConnected()) {
+    return "unavailable";
+  }
+
+  String url = String(kRingDecisionBaseUrl) + "?event_id=" + String(eventId);
+  HTTPClient http;
+  http.setTimeout(5000);
+  if (!http.begin(url)) {
+    logPrintln("[TELEGRAM] Decision-URL konnte nicht initialisiert werden.");
+    return "unavailable";
+  }
+
+  int statusCode = http.GET();
+  if (statusCode <= 0) {
+    logPrintf("[TELEGRAM] HTTP-Fehler bei Decision-Poll: %s\n", http.errorToString(statusCode).c_str());
+    http.end();
+    return "unavailable";
+  }
+
+  String responseBody = http.getString();
+  http.end();
+  logPrintf("[TELEGRAM] Decision-Antwort: %s\n", responseBody.c_str());
+
+  if (!jsonHasTrue(responseBody, "telegram_enabled")) {
+    return "disabled";
+  }
+  return jsonGetString(responseBody, "decision", "pending");
+}
+
+void waitForTelegramDecision(int eventId) {
+  if (eventId < 0) {
+    return;
+  }
+
+  displayShowRemoteDecision("pending");
+  unsigned long startMillis = millis();
+  while (millis() - startMillis < kTelegramDecisionTimeoutMs) {
+    flushRemoteLogs();
+    String decision = pollRingDecisionFromPi(eventId);
+    if (decision == "approve" || decision == "deny") {
+      logPrintf("[TELEGRAM] Entscheidung fuer Event %d: %s\n", eventId, decision.c_str());
+      showRemoteDecision(decision);
+      return;
+    }
+    if (decision == "disabled") {
+      logPrintln("[TELEGRAM] Telegram ist auf dem Pi nicht aktiviert.");
+      displayShowText("Telegram\nnicht aktiv", 1);
+      return;
+    }
+    delay(kTelegramDecisionPollIntervalMs);
+  }
+
+  logPrintf("[TELEGRAM] Keine Entscheidung fuer Event %d innerhalb des Zeitlimits.\n", eventId);
+  displayShowNoTelegramDecision();
 }
 
 String runRingWorkflow() {

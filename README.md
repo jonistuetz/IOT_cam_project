@@ -11,9 +11,11 @@ Der Prototyp bildet aktuell diesen Ablauf ab:
 3. Der ESP wartet kurz, blinkt als Startsignal und nimmt dann `3` Bilder mit Blitz auf.
 4. Jedes Bild wird an den Raspberry Pi an `/api/ring-capture` geschickt.
 5. Der Raspberry Pi fuehrt fuer jedes Bild die Gesichtverifikation aus, speichert Snapshots und loggt das Gesamtereignis.
-6. Die externe LED blinkt nach der Verifikation langsam bei Zulassung und schnell bei Ablehnung.
-7. Nach einer abgeschlossenen Klingelsession geht der ESP in Deep Sleep und wacht bei Bewegung am HC-SR501 wieder auf.
-8. Das Pi-Dashboard zeigt:
+6. Optional sendet der Raspberry Pi ein Telegram-Foto mit Status und Buttons zum Freigeben oder Ablehnen.
+7. Die externe LED blinkt nach der Verifikation langsam bei Zulassung und schnell bei Ablehnung.
+8. Bei einer Telegram-Entscheidung zeigt das OLED die Rueckmeldung an und der ESP blinkt das Ergebnis erneut.
+9. Nach einer abgeschlossenen Klingelsession geht der ESP in Deep Sleep und wacht bei Bewegung am HC-SR501 wieder auf.
+10. Das Pi-Dashboard zeigt:
    - Livebild vom ESP (nur auf Knopfdruck über Dashboard)
    - letztes Klingelereignis
    - Burst-Snapshots
@@ -66,6 +68,22 @@ python face_verifier.py serve --host 0.0.0.0 --port 8000
 
 Beim ersten Start laedt InsightFace automatisch das Modell `buffalo_sc` herunter. Der Prototyp nutzt nur `CPUExecutionProvider`.
 
+### Telegram-Benachrichtigungen aktivieren
+
+Der Pi kann nach einem abgeschlossenen Klingelereignis ein Foto an einen Telegram-Chat senden. Dafuer vor dem Start des Dienstes diese Umgebungsvariablen setzen:
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456:ABCDEF..."
+export TELEGRAM_CHAT_ID="123456789"
+```
+
+Danach den Pi-Dienst wie oben starten. Der Bot sendet pro Klingelereignis ein Foto mit Caption und zwei Buttons:
+
+- `Reinlassen`
+- `Ablehnen`
+
+Der ESP32-CAM behandelt die Gesichtserkennung nur als Empfehlung, fragt die finale Entscheidung bis zu 90 Sekunden beim Pi ab und zeigt danach `Telegram freigegeben`, `Telegram abgelehnt` oder bei Timeout eine kurze Hinweismeldung auf dem OLED an.
+
 ### Referenzbilder anlernen
 
 ```bash
@@ -90,6 +108,7 @@ In [src/main.cpp](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/src
 - `kWifiPassword`
 - `kVerifierUrl`
 - `kRingCaptureBaseUrl`
+- `kRingDecisionBaseUrl`
 
 Aktuell nimmt der ESP an, dass der Pi unter `10.42.0.1:8000` laeuft.
 
@@ -107,6 +126,7 @@ Aktuell nimmt der ESP an, dass der Pi unter `10.42.0.1:8000` laeuft.
 - waehrend der Verifikation leuchtet Gruen gedimmt; nach der Verifikation blinkt Gruen langsam bei Zulassung und schnell bei Ablehnung
 - nach einer abgeschlossenen Klingelsession wird Deep Sleep aktiviert, sobald HC-SR501-OUT und Taster wieder `LOW` sind
 - das OLED zeigt waehrend der Pruefung und nach der Verifikation Statusmeldungen zu Gesichtserkennung und Zutrittsentscheidung
+- nach einem Telegram-Ereignis wartet der ESP kurz auf eine Fernentscheidung und zeigt `Telegram freigegeben` oder `Telegram abgelehnt` an
 - direkt vor Deep Sleep wird das OLED per SSD1306-Display-Off-Befehl ausgeschaltet
 - vor dem Burst gibt es `2` langsame Startblinksignale
 - vor jedem gespeicherten Foto verwirft der ESP alte Kameraframes, damit kein Bild aus dem vorherigen Ereignis im neuen Burst landet
@@ -140,12 +160,14 @@ Das Livebild aktualisiert sich **nur auf Knopfdruck**.
 
 - `GET /` -> Dashboard
 - `GET /health` -> Status des Pi-Dienstes
+- `GET /api/network-status` -> Internet-/Telegram-Uplink-Check mit Debug-Infos
 - `GET /api/dashboard` -> Dashboard-Daten als JSON
 - `GET /api/live-snapshot` -> Pi holt ein Snapshot vom ESP und reicht es weiter
 - `POST /api/enroll` -> Referenzbild speichern
 - `POST /api/verify` -> einzelnes Bild verifizieren
 - `POST /api/ring-capture` -> einzelnes Burst-Bild innerhalb eines Klingelereignisses
 - `POST /api/esp-log` -> ESP-Logzeilen empfangen und im Pi-Terminal ausgeben
+- `GET /api/ring-decision?event_id=<id>` -> aktuelle Telegram-Entscheidung fuer ein Klingelereignis
 - `GET /captures/<datei>` -> gespeicherte Burst-Bilder
 
 ### ESP

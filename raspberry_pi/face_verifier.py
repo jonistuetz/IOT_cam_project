@@ -1,5 +1,7 @@
 import argparse
 import json
+import os
+import socket
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,6 +12,7 @@ from urllib import request as urlrequest
 
 import cv2
 import numpy as np
+import requests
 from flask import Flask, jsonify, make_response, request, send_from_directory
 from insightface.app import FaceAnalysis
 
@@ -339,6 +342,8 @@ class FaceVerifierService:
     self.captures_dir = DEFAULT_CAPTURES_DIR
     self.model_name = model_name
     self.similarity_threshold = similarity_threshold
+    self.telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    self.telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     self._face_app: Optional[FaceAnalysis] = None
     self.captures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -403,6 +408,27 @@ class FaceVerifierService:
             image_path TEXT NOT NULL,
             created_at TEXT NOT NULL,
             FOREIGN KEY(event_id) REFERENCES ring_events(id)
+          )
+          """
+      )
+      connection.execute(
+          """
+          CREATE TABLE IF NOT EXISTS event_actions (
+            event_id INTEGER PRIMARY KEY,
+            telegram_message_id INTEGER,
+            telegram_notified_at TEXT,
+            decision TEXT,
+            decision_source TEXT,
+            decided_at TEXT,
+            FOREIGN KEY(event_id) REFERENCES ring_events(id)
+          )
+          """
+      )
+      connection.execute(
+          """
+          CREATE TABLE IF NOT EXISTS app_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
           )
           """
       )
@@ -675,6 +701,10 @@ class FaceVerifierService:
       )
       connection.commit()
 
+    event_complete = received_images >= total_images
+    if event_complete:
+      self._send_telegram_notification_for_event(event_id)
+
     self._debug(
         f"ring_capture result event_id={event_id} winner={result.person_id} "
         f"matched={result.matched} similarity={result.similarity} "
@@ -692,12 +722,42 @@ class FaceVerifierService:
         "reference_count": result.reference_count,
         "detected_faces": result.detected_faces,
         "error": result.error,
-        "event_complete": received_images >= total_images,
+        "event_complete": event_complete,
         "matched_images": matched_images,
         "required_matches": required_matches,
         "overall_matched": event_matched,
         "overall_best_similarity": best_similarity,
         "image_url": f"/captures/{image_filename}",
+    }
+
+  def get_event_decision(self, event_id: int) -> dict:
+    self._sync_telegram_updates()
+    with sqlite3.connect(self.db_path) as connection:
+      connection.row_factory = sqlite3.Row
+      action = connection.execute(
+          """
+          SELECT event_id, decision, decision_source, decided_at
+          FROM event_actions
+          WHERE event_id = ?
+          """,
+          (event_id,),
+      ).fetchone()
+
+    decision = "pending"
+    source = None
+    decided_at = None
+    if action is not None and action["decision"]:
+      decision = action["decision"]
+      source = action["decision_source"]
+      decided_at = action["decided_at"]
+
+    return {
+        "ok": True,
+        "event_id": event_id,
+        "decision": decision,
+        "decision_source": source,
+        "decided_at": decided_at,
+        "telegram_enabled": self.telegram_enabled,
     }
 
   def dashboard_data(
@@ -771,6 +831,46 @@ class FaceVerifierService:
     with urlrequest.urlopen(DEFAULT_ESP_SNAPSHOT_URL, timeout=8) as response:
       return response.read()
 
+  def network_status(self) -> dict:
+    target_host = "api.telegram.org"
+    status = {
+        "internet_ok": False,
+        "dns_ok": False,
+        "tcp_ok": False,
+        "target_host": target_host,
+        "resolved_ip": None,
+        "local_ip": None,
+        "error": None,
+    }
+
+    try:
+      probe_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+      probe_socket.settimeout(2.0)
+      probe_socket.connect(("1.1.1.1", 80))
+      status["local_ip"] = probe_socket.getsockname()[0]
+      probe_socket.close()
+    except OSError as exc:
+      status["error"] = f"Kein Uplink fuer Internet-Test: {exc}"
+      return status
+
+    try:
+      resolved_ip = socket.gethostbyname(target_host)
+      status["resolved_ip"] = resolved_ip
+      status["dns_ok"] = True
+    except OSError as exc:
+      status["error"] = f"DNS-Aufloesung fuer {target_host} fehlgeschlagen: {exc}"
+      return status
+
+    try:
+      tcp_socket = socket.create_connection((target_host, 443), timeout=4.0)
+      tcp_socket.close()
+      status["tcp_ok"] = True
+      status["internet_ok"] = True
+    except OSError as exc:
+      status["error"] = f"HTTPS-Verbindung zu {target_host}:443 fehlgeschlagen: {exc}"
+
+    return status
+
   def _event_to_dict(self, row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -804,6 +904,264 @@ class FaceVerifierService:
       face_app.prepare(ctx_id=-1, det_size=DEFAULT_DET_SIZE)
       self._face_app = face_app
     return self._face_app
+
+  @property
+  def telegram_enabled(self) -> bool:
+    return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+  def _send_telegram_notification_for_event(self, event_id: int) -> None:
+    if not self.telegram_enabled:
+      return
+
+    network_status = self.network_status()
+    if not network_status["internet_ok"]:
+      self._debug(
+          f"telegram skipped event_id={event_id}: kein Internet/Uplink. "
+          f"details={json.dumps(network_status, ensure_ascii=True)}"
+      )
+      return
+
+    with sqlite3.connect(self.db_path) as connection:
+      connection.row_factory = sqlite3.Row
+      event_row = connection.execute(
+          """
+          SELECT id, person_id, total_images, received_images, matched_images, matched, best_similarity, created_at, updated_at
+          FROM ring_events
+          WHERE id = ?
+          """,
+          (event_id,),
+      ).fetchone()
+      if event_row is None:
+        return
+
+      action_row = connection.execute(
+          """
+          SELECT telegram_notified_at
+          FROM event_actions
+          WHERE event_id = ?
+          """,
+          (event_id,),
+      ).fetchone()
+      if action_row is not None and action_row["telegram_notified_at"]:
+        return
+
+      capture_row = connection.execute(
+          """
+          SELECT image_path, matched, similarity, detected_faces, error, sequence_index
+          FROM ring_captures
+          WHERE event_id = ?
+          ORDER BY matched DESC, similarity DESC, sequence_index ASC
+          LIMIT 1
+          """,
+          (event_id,),
+      ).fetchone()
+
+    event = self._event_to_dict(event_row)
+    caption = self._build_telegram_caption(event, capture_row)
+    image_path = self.captures_dir / capture_row["image_path"] if capture_row is not None else None
+
+    try:
+      message_id = self._telegram_send_photo(image_path, caption, event_id)
+    except Exception as exc:
+      self._debug(f"telegram send failed event_id={event_id}: {exc}")
+      return
+
+    now = self._utc_now()
+    with sqlite3.connect(self.db_path) as connection:
+      connection.execute(
+          """
+          INSERT INTO event_actions (event_id, telegram_message_id, telegram_notified_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(event_id) DO UPDATE SET
+            telegram_message_id = excluded.telegram_message_id,
+            telegram_notified_at = excluded.telegram_notified_at
+          """,
+          (event_id, message_id, now),
+      )
+      connection.commit()
+
+  def _build_telegram_caption(self, event: dict, capture_row: Optional[sqlite3.Row]) -> str:
+    person_id = event["person_id"] or UNKNOWN_PERSON_ID
+    recommendation = "Zulassen" if event["matched"] else "Ablehnen"
+    lines = [
+        f"Klingelereignis #{event['id']}",
+        f"Person: {person_id}",
+        f"Empfehlung: {recommendation}",
+        f"Matches: {event['matched_images']}/{event['total_images']}",
+        f"Zeit: {event['created_at_local']}",
+    ]
+    if event["best_similarity"] is not None:
+      lines.append(f"Beste Confidence: {event['best_similarity']:.2f}")
+    if capture_row is not None:
+      if capture_row["detected_faces"] is not None:
+        lines.append(f"Gesichter: {capture_row['detected_faces']}")
+      if capture_row["error"]:
+        lines.append(f"Hinweis: {capture_row['error']}")
+    return "\n".join(lines)
+
+  def _telegram_api_url(self, method: str) -> str:
+    return f"https://api.telegram.org/bot{self.telegram_bot_token}/{method}"
+
+  def _telegram_reply_markup(self, event_id: int) -> str:
+    return json.dumps(
+        {
+            "inline_keyboard": [[
+                {"text": "Reinlassen", "callback_data": f"doorbell:approve:{event_id}"},
+                {"text": "Ablehnen", "callback_data": f"doorbell:deny:{event_id}"},
+            ]]
+        }
+    )
+
+  def _telegram_send_photo(self, image_path: Optional[Path], caption: str, event_id: int) -> int:
+    if image_path is not None and image_path.exists():
+      with image_path.open("rb") as image_file:
+        response = requests.post(
+            self._telegram_api_url("sendPhoto"),
+            data={
+                "chat_id": self.telegram_chat_id,
+                "caption": caption,
+                "reply_markup": self._telegram_reply_markup(event_id),
+            },
+            files={"photo": image_file},
+            timeout=15,
+        )
+    else:
+      response = requests.post(
+          self._telegram_api_url("sendMessage"),
+          data={
+              "chat_id": self.telegram_chat_id,
+              "text": caption,
+              "reply_markup": self._telegram_reply_markup(event_id),
+          },
+          timeout=15,
+      )
+
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("ok"):
+      raise RuntimeError(f"telegram api error: {payload}")
+    return int(payload["result"]["message_id"])
+
+  def _sync_telegram_updates(self) -> None:
+    if not self.telegram_enabled:
+      return
+
+    network_status = self.network_status()
+    if not network_status["internet_ok"]:
+      self._debug(
+          "telegram update sync skipped: kein Internet/Uplink. "
+          f"details={json.dumps(network_status, ensure_ascii=True)}"
+      )
+      return
+
+    offset = self._get_app_state("telegram_update_offset")
+    params = {"timeout": 0, "allowed_updates": json.dumps(["callback_query"])}
+    if offset is not None:
+      params["offset"] = str(int(offset))
+
+    try:
+      response = requests.get(self._telegram_api_url("getUpdates"), params=params, timeout=15)
+      response.raise_for_status()
+      payload = response.json()
+    except Exception as exc:
+      self._debug(f"telegram update sync failed: {exc}")
+      return
+
+    if not payload.get("ok"):
+      self._debug(f"telegram update sync returned error payload: {payload}")
+      return
+
+    next_offset = None
+    for update in payload.get("result", []):
+      next_offset = int(update["update_id"]) + 1
+      callback_query = update.get("callback_query")
+      if callback_query is not None:
+        self._process_telegram_callback(callback_query)
+
+    if next_offset is not None:
+      self._set_app_state("telegram_update_offset", str(next_offset))
+
+  def _process_telegram_callback(self, callback_query: dict) -> None:
+    callback_id = callback_query.get("id")
+    data = callback_query.get("data", "")
+    message = callback_query.get("message") or {}
+    chat = message.get("chat") or {}
+
+    if str(chat.get("id", "")) != self.telegram_chat_id:
+      self._answer_callback_query(callback_id, "Dieser Chat ist nicht freigeschaltet.")
+      return
+
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "doorbell" or parts[1] not in {"approve", "deny"}:
+      self._answer_callback_query(callback_id, "Unbekannter Befehl.")
+      return
+
+    try:
+      event_id = int(parts[2])
+    except ValueError:
+      self._answer_callback_query(callback_id, "Ungueltige Ereignis-ID.")
+      return
+
+    decision = parts[1]
+    now = self._utc_now()
+
+    with sqlite3.connect(self.db_path) as connection:
+      connection.row_factory = sqlite3.Row
+      existing = connection.execute(
+          "SELECT decision FROM event_actions WHERE event_id = ?",
+          (event_id,),
+      ).fetchone()
+      if existing is not None and existing["decision"]:
+        self._answer_callback_query(callback_id, "Dieses Klingeln wurde schon entschieden.")
+        return
+
+      connection.execute(
+          """
+          INSERT INTO event_actions (event_id, decision, decision_source, decided_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(event_id) DO UPDATE SET
+            decision = excluded.decision,
+            decision_source = excluded.decision_source,
+            decided_at = excluded.decided_at
+          """,
+          (event_id, decision, "telegram", now),
+      )
+      connection.commit()
+
+    self._answer_callback_query(
+        callback_id,
+        "Zutritt freigegeben." if decision == "approve" else "Zutritt abgelehnt.",
+    )
+
+  def _answer_callback_query(self, callback_id: Optional[str], text: str) -> None:
+    if not callback_id or not self.telegram_enabled:
+      return
+    try:
+      response = requests.post(
+          self._telegram_api_url("answerCallbackQuery"),
+          data={"callback_query_id": callback_id, "text": text},
+          timeout=15,
+      )
+      response.raise_for_status()
+    except Exception as exc:
+      self._debug(f"telegram callback answer failed: {exc}")
+
+  def _get_app_state(self, key: str) -> Optional[str]:
+    with sqlite3.connect(self.db_path) as connection:
+      row = connection.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+    return None if row is None else str(row[0])
+
+  def _set_app_state(self, key: str, value: str) -> None:
+    with sqlite3.connect(self.db_path) as connection:
+      connection.execute(
+          """
+          INSERT INTO app_state (key, value)
+          VALUES (?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+          """,
+          (key, value),
+      )
+      connection.commit()
 
   def _extract_primary_face(self, image: np.ndarray):
     faces = self._get_face_app().get(image)
@@ -931,14 +1289,22 @@ def create_app(service: FaceVerifierService) -> Flask:
 
   @app.get("/health")
   def health():
+    network_status = service.network_status()
     return jsonify(
         {
-            "status": "ok",
+            "status": "ok" if network_status["internet_ok"] else "degraded",
             "model": service.model_name,
             "threshold": service.similarity_threshold,
             "db_path": str(service.db_path),
+            "telegram_enabled": service.telegram_enabled,
+            "network": network_status,
         }
     )
+
+  @app.get("/api/network-status")
+  def network_status():
+    status = service.network_status()
+    return jsonify({"ok": status["internet_ok"], **status}), (200 if status["internet_ok"] else 503)
 
   @app.get("/api/persons")
   def list_people():
@@ -1061,6 +1427,19 @@ def create_app(service: FaceVerifierService) -> Flask:
     if message:
       print(f"[ESP {mac}] {message}", flush=True)
     return jsonify({"ok": True})
+
+  @app.get("/api/ring-decision")
+  def ring_decision():
+    event_id_value = request.args.get("event_id")
+    if not event_id_value:
+      return jsonify({"ok": False, "error": "event_id fehlt."}), 400
+
+    try:
+      event_id = int(event_id_value)
+    except ValueError:
+      return jsonify({"ok": False, "error": "event_id ist ungueltig."}), 400
+
+    return jsonify(service.get_event_decision(event_id))
 
   def _read_image_bytes() -> Optional[bytes]:
     if "image" in request.files:

@@ -3,6 +3,7 @@ import json
 import os
 import socket
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,14 +14,15 @@ from urllib import request as urlrequest
 import cv2
 import numpy as np
 import requests
-from flask import Flask, jsonify, make_response, request, send_from_directory
+from flask import Flask, jsonify, make_response, redirect, request, send_from_directory
 from insightface.app import FaceAnalysis
 
 
 DEFAULT_DB_PATH = Path(__file__).with_name("face_verification.db")
 DEFAULT_CAPTURES_DIR = Path(__file__).with_name("captures")
+DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.json")
 DEFAULT_MODEL_NAME = "buffalo_sc"
-DEFAULT_SIMILARITY_THRESHOLD = 0.42
+DEFAULT_SIMILARITY_THRESHOLD = 0.60
 DEFAULT_DET_SIZE = (640, 640)
 UNKNOWN_PERSON_ID = "unknown"
 DEFAULT_ESP_SNAPSHOT_URL = "http://10.42.0.172/snapshot"
@@ -319,6 +321,746 @@ DEFAULT_DASHBOARD_HTML = """<!DOCTYPE html>
 </html>
 """
 
+DEFAULT_SETUP_HTML = """<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Doorbell Setup</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #edf2ee;
+      --card: #fffdf7;
+      --text: #1f2933;
+      --accent: #0f766e;
+      --accent-dark: #115e59;
+      --ok: #166534;
+      --bad: #991b1b;
+      --muted: #637083;
+      --line: rgba(31, 41, 51, 0.14);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Helvetica, Arial, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(15, 118, 110, 0.16), transparent 34rem),
+        linear-gradient(135deg, #f6f0df 0%, #e9f2ee 52%, #dce8e3 100%);
+      color: var(--text);
+      padding: 24px;
+    }
+    main {
+      width: min(980px, 100%);
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+    .hero, .card {
+      background: rgba(255, 253, 247, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: 0 22px 55px rgba(31, 41, 51, 0.12);
+      padding: 22px;
+    }
+    h1, h2 {
+      margin: 0 0 10px;
+      letter-spacing: -0.03em;
+    }
+    p {
+      color: var(--muted);
+      line-height: 1.55;
+      margin: 0 0 12px;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      margin: 12px 0;
+      font-weight: 700;
+    }
+    input, button {
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      font: inherit;
+      padding: 11px 13px;
+    }
+    form button {
+      margin: 8px 8px 0 0;
+    }
+    input[type="file"] {
+      background: #fff;
+    }
+    button {
+      background: var(--accent);
+      color: white;
+      border: 0;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    button.secondary {
+      background: #334155;
+    }
+    button:hover {
+      background: var(--accent-dark);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 18px;
+    }
+    .method-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 14px 0;
+    }
+    .method-tabs button {
+      background: #dbe8e4;
+      color: var(--text);
+    }
+    .method-tabs button.active {
+      background: var(--accent);
+      color: white;
+    }
+    .method-panel[hidden] {
+      display: none;
+    }
+    .guide {
+      border-left: 4px solid var(--accent);
+      background: rgba(15, 118, 110, 0.08);
+      border-radius: 14px;
+      padding: 12px;
+      margin: 12px 0;
+      color: var(--text);
+      line-height: 1.55;
+    }
+    .guide strong {
+      font-family: Helvetica, Arial, sans-serif;
+      font-weight: 800;
+    }
+    .status {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .pill {
+      border-radius: 999px;
+      padding: 7px 11px;
+      background: rgba(99, 112, 131, 0.12);
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .pill.ok { background: rgba(22, 101, 52, 0.12); color: var(--ok); }
+    .pill.bad { background: rgba(153, 27, 27, 0.12); color: var(--bad); }
+    .result {
+      white-space: pre-wrap;
+      background: rgba(15, 118, 110, 0.08);
+      border-radius: 16px;
+      padding: 12px;
+      min-height: 44px;
+      color: var(--text);
+    }
+    .people {
+      display: grid;
+      gap: 10px;
+    }
+    .person {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.55);
+    }
+    .person-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .person-actions button {
+      padding: 8px 10px;
+      font-size: 14px;
+    }
+    .preview {
+      width: 100%;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #111;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      margin-top: 10px;
+    }
+    .danger {
+      background: #991b1b;
+    }
+    .danger:hover {
+      background: #7f1d1d;
+    }
+    @media (max-width: 680px) {
+      body { padding: 14px; }
+      .hero, .card { padding: 18px; border-radius: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Smart Doorbell Setup</h1>
+      <p>Lokale Admin-Seite für Telegram-Konfiguration, Systemstatus und Referenzbilder. Bestehende Gesichter bleiben erhalten.</p>
+      <div id="status" class="status"></div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Telegram</h2>
+        <p>Token wird lokal auf dem Raspberry Pi gespeichert und in der Oberflaeche nur maskiert angezeigt.</p>
+        <form id="configForm">
+          <label>Bot Token
+            <input id="telegramBotToken" name="telegram_bot_token" autocomplete="off" placeholder="123456:ABCDEF...">
+          </label>
+          <label>Chat ID
+            <input id="telegramChatId" name="telegram_chat_id" autocomplete="off" placeholder="123456789">
+          </label>
+          <button type="submit">Telegram speichern</button>
+          <button class="secondary" id="testTelegramButton" type="button">Testnachricht senden</button>
+        </form>
+        <div id="configResult" class="result">Noch keine Aktion ausgeführt.</div>
+      </article>
+
+      <article class="card">
+        <h2>Zulassungsschwelle</h2>
+        <p>Legt fest, ab welcher Face-Similarity ein einzelnes Bild als Match gilt. Hoeher = strenger, niedriger = toleranter. Standardwert ist 0.60.</p>
+        <form id="thresholdForm">
+          <label>Similarity Threshold
+            <input id="similarityThreshold" name="similarity_threshold" type="number" min="0" max="1" step="0.01" placeholder="0.60">
+          </label>
+          <button type="submit">Schwelle speichern</button>
+        </form>
+        <div id="thresholdResult" class="result">Noch keine Schwelle gespeichert.</div>
+      </article>
+
+      <article class="card">
+        <h2>Gesicht anlernen</h2>
+        <p>Wähle, ob du vorhandene Bilder hochladen oder direkt mit der ESP32-CAM realistische Referenzbilder aufnehmen möchtest.</p>
+        <div class="method-tabs">
+          <button id="showEspEnroll" class="active" type="button">ESP-Kamera</button>
+          <button id="showUploadEnroll" type="button">Manueller Upload</button>
+        </div>
+
+        <div id="espEnrollPanel" class="method-panel">
+          <h3>Geführte ESP-Aufnahme</h3>
+          <p>Es werden fest 12 Bilder aufgenommen: bei ca. 0,5 m und ca. 1 m Abstand jeweils 2 frontal, 2 leicht links und 2 leicht rechts. Du klickst jedes Bild einzeln weiter.</p>
+          <p>Vor dem Start muss die Klingel aus dem Deep Sleep geweckt werden, z. B. durch Tastendruck oder Bewegungssensor. Warte danach, bis der ESP mit dem WLAN verbunden ist: Wenn die grüne LED dauerhaft leuchtet, ist er bereit. Nimm am besten zuerst eine Vorschau auf und starte danach die geführte Aufnahme.</p>
+          <div class="guide" id="espGuide">
+            Stelle dich vor die ESP32-CAM. Starte erst, wenn dein Gesicht gut sichtbar ist.
+          </div>
+          <form id="espEnrollForm">
+            <label>Person ID
+              <input id="espPersonId" name="person_id" required placeholder="jonathan">
+            </label>
+            <button type="submit">Geführte Aufnahme starten</button>
+            <button class="danger" id="espDiscardSessionButton" type="button" hidden>Session verwerfen</button>
+            <button class="secondary" id="espPreviewButton" type="button">Vorschau aufnehmen</button>
+          </form>
+          <img id="espPreview" class="preview" alt="ESP-Kamera-Vorschau">
+          <div id="espEnrollResult" class="result">Noch keine ESP-Aufnahme gestartet.</div>
+        </div>
+
+        <div id="uploadEnrollPanel" class="method-panel" hidden>
+          <h3>Manueller Upload</h3>
+          <p>Lade mehrere Bilder derselben Person hoch. Pro gültigem Bild wird ein Embedding in der bestehenden Datenbank gespeichert.</p>
+          <form id="enrollForm">
+            <label>Person ID
+              <input id="personId" name="person_id" required placeholder="jonathan">
+            </label>
+            <label>Bilder
+              <input id="images" name="images" type="file" accept="image/*" multiple required>
+            </label>
+            <button type="submit">Bilder anlernen</button>
+          </form>
+          <div id="enrollResult" class="result">Noch keine Bilder hochgeladen.</div>
+        </div>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Gespeicherte Personen</h2>
+      <div id="people" class="people">Lade Personen...</div>
+    </section>
+  </main>
+
+  <script>
+    function escapeHtml(value) {
+      return String(value == null ? "" : value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+    }
+
+    function pill(label, ok) {
+      return `<span class="pill ${ok ? "ok" : "bad"}">${escapeHtml(label)}</span>`;
+    }
+
+    function highlightInstruction(value) {
+      let html = escapeHtml(value);
+      ["0,5 m", "1 m", "frontal", "links", "rechts"].forEach((term) => {
+        html = html.replaceAll(term, `<strong>${term}</strong>`);
+      });
+      return html;
+    }
+
+    const espCaptureGuide = [
+      "Bild 1/12: Abstand ca. 0,5 m, frontal in die Kamera schauen.",
+      "Bild 2/12: Abstand ca. 0,5 m, frontal bleiben, kleine Variation.",
+      "Bild 3/12: Abstand ca. 0,5 m, Kopf leicht nach links drehen.",
+      "Bild 4/12: Abstand ca. 0,5 m, weiter leicht links, kleine Variation.",
+      "Bild 5/12: Abstand ca. 0,5 m, Kopf leicht nach rechts drehen.",
+      "Bild 6/12: Abstand ca. 0,5 m, weiter leicht rechts, kleine Variation.",
+      "Bild 7/12: Abstand ca. 1 m, frontal in die Kamera schauen.",
+      "Bild 8/12: Abstand ca. 1 m, frontal bleiben, kleine Variation.",
+      "Bild 9/12: Abstand ca. 1 m, Kopf leicht nach links drehen.",
+      "Bild 10/12: Abstand ca. 1 m, weiter leicht links, kleine Variation.",
+      "Bild 11/12: Abstand ca. 1 m, Kopf leicht nach rechts drehen.",
+      "Bild 12/12: Abstand ca. 1 m, weiter leicht rechts, kleine Variation.",
+    ];
+    let espEnrollState = {
+      active: false,
+      personId: "",
+      sessionId: "",
+      stepIndex: 0,
+      results: [],
+    };
+
+    function showEnrollmentMethod(method) {
+      const espActive = method === "esp";
+      document.getElementById("espEnrollPanel").hidden = !espActive;
+      document.getElementById("uploadEnrollPanel").hidden = espActive;
+      document.getElementById("showEspEnroll").classList.toggle("active", espActive);
+      document.getElementById("showUploadEnroll").classList.toggle("active", !espActive);
+    }
+
+    function setEspGuide(value) {
+      document.getElementById("espGuide").innerHTML = highlightInstruction(value);
+    }
+
+    async function loadStatus() {
+      const [configResponse, healthResponse, peopleResponse] = await Promise.all([
+        fetch("/api/config"),
+        fetch("/health"),
+        fetch("/api/persons"),
+      ]);
+      const config = await configResponse.json();
+      const health = await healthResponse.json();
+      const people = await peopleResponse.json();
+      const personList = people.people || [];
+      const activePeople = personList.filter((person) => person.active).length;
+
+      document.getElementById("status").innerHTML = [
+        pill("Telegram " + (config.telegram_enabled ? "aktiv" : "fehlt"), config.telegram_enabled),
+        pill("Internet " + (health.network && health.network.internet_ok ? "ok" : "nicht ok"), health.network && health.network.internet_ok),
+        pill("Aktive Personen: " + activePeople, activePeople > 0),
+      ].join("");
+
+      document.getElementById("telegramChatId").value = config.telegram_chat_id || "";
+      document.getElementById("telegramBotToken").placeholder = config.telegram_bot_token_masked || "123456:ABCDEF...";
+      document.getElementById("similarityThreshold").value = config.similarity_threshold == null ? "" : Number(config.similarity_threshold).toFixed(2);
+
+      renderPeople(personList);
+    }
+
+    function setResult(id, data) {
+      document.getElementById(id).textContent =
+          typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    }
+
+    function renderPeople(personList) {
+      const peopleNode = document.getElementById("people");
+      peopleNode.innerHTML = "";
+      if (personList.length === 0) {
+        peopleNode.textContent = "Noch keine Personen gespeichert.";
+        return;
+      }
+
+      personList.forEach((person) => {
+        const card = document.createElement("div");
+        card.className = "person";
+
+        const title = document.createElement("strong");
+        title.textContent = person.person_id;
+        card.appendChild(title);
+        card.appendChild(document.createElement("br"));
+
+        card.appendChild(document.createTextNode("Status: "));
+        const status = document.createElement("span");
+        status.className = "pill " + (person.active ? "ok" : "bad");
+        status.textContent = person.active ? "aktiv" : "deaktiviert";
+        card.appendChild(status);
+        card.appendChild(document.createElement("br"));
+
+        card.appendChild(document.createTextNode("Referenzbilder: " + person.reference_count));
+        card.appendChild(document.createElement("br"));
+        card.appendChild(document.createTextNode("Aktualisiert: " + (person.updated_at || "n/a")));
+
+        const actions = document.createElement("div");
+        actions.className = "person-actions";
+
+        const toggleButton = document.createElement("button");
+        toggleButton.className = "person-toggle";
+        toggleButton.type = "button";
+        toggleButton.dataset.personId = person.person_id;
+        toggleButton.dataset.active = person.active ? "false" : "true";
+        toggleButton.textContent = person.active ? "Deaktivieren" : "Aktivieren";
+        actions.appendChild(toggleButton);
+
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "person-delete danger";
+        deleteButton.type = "button";
+        deleteButton.dataset.personId = person.person_id;
+        deleteButton.textContent = "Löschen";
+        actions.appendChild(deleteButton);
+
+        card.appendChild(actions);
+        peopleNode.appendChild(card);
+      });
+    }
+
+    async function setPersonActive(encodedPersonId, active) {
+      try {
+        setResult("enrollResult", active ? "Aktiviere Person..." : "Deaktiviere Person...");
+        const response = await fetch(`/api/persons/${encodedPersonId}/active`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ active }),
+        });
+        const data = await response.json();
+        setResult("enrollResult", data);
+        await loadStatus();
+      } catch (error) {
+        setResult("enrollResult", "Fehler beim Ändern des Personenstatus: " + error);
+      }
+    }
+
+    async function deletePerson(encodedPersonId) {
+      const personId = decodeURIComponent(encodedPersonId);
+      if (!confirm(`Referenzbilder für "${personId}" wirklich löschen? Alte Ereignisse bleiben erhalten.`)) {
+        return;
+      }
+      try {
+        setResult("enrollResult", "Lösche Referenzbilder...");
+        const response = await fetch(`/api/persons/${encodedPersonId}`, { method: "DELETE" });
+        const data = await response.json();
+        setResult("enrollResult", data);
+        await loadStatus();
+      } catch (error) {
+        setResult("enrollResult", "Fehler beim Löschen: " + error);
+      }
+    }
+
+    document.getElementById("people").addEventListener("click", async (event) => {
+      const toggleButton = event.target.classList && event.target.classList.contains("person-toggle")
+          ? event.target
+          : null;
+      if (toggleButton) {
+        const encodedPersonId = encodeURIComponent(toggleButton.dataset.personId);
+        await setPersonActive(encodedPersonId, toggleButton.dataset.active === "true");
+        return;
+      }
+
+      const deleteButton = event.target.classList && event.target.classList.contains("person-delete")
+          ? event.target
+          : null;
+      if (deleteButton) {
+        const encodedPersonId = encodeURIComponent(deleteButton.dataset.personId);
+        await deletePerson(encodedPersonId);
+      }
+    });
+
+    document.getElementById("showEspEnroll").addEventListener("click", () => {
+      showEnrollmentMethod("esp");
+    });
+
+    document.getElementById("showUploadEnroll").addEventListener("click", () => {
+      showEnrollmentMethod("upload");
+    });
+
+    document.getElementById("configForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        setResult("configResult", "Speichere Telegram-Konfiguration...");
+        const form = new FormData(event.currentTarget);
+        const response = await fetch("/api/config", { method: "POST", body: form });
+        const data = await response.json();
+        setResult("configResult", data);
+        document.getElementById("telegramBotToken").value = "";
+        await loadStatus();
+      } catch (error) {
+        setResult("configResult", "Fehler beim Speichern: " + error);
+      }
+    });
+
+    document.getElementById("thresholdForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        setResult("thresholdResult", "Speichere Zulassungsschwelle...");
+        const form = new FormData(event.currentTarget);
+        const response = await fetch("/api/config", { method: "POST", body: form });
+        const data = await response.json();
+        setResult("thresholdResult", data);
+        await loadStatus();
+      } catch (error) {
+        setResult("thresholdResult", "Fehler beim Speichern der Schwelle: " + error);
+      }
+    });
+
+    document.getElementById("testTelegramButton").addEventListener("click", async () => {
+      try {
+        setResult("configResult", "Sende Telegram-Testnachricht...");
+        const response = await fetch("/api/test-telegram", { method: "POST" });
+        const data = await response.json();
+        setResult("configResult", data);
+        await loadStatus();
+      } catch (error) {
+        setResult("configResult", "Fehler beim Telegram-Test: " + error);
+      }
+    });
+
+    document.getElementById("enrollForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submitButton = event.currentTarget.querySelector("button[type='submit']");
+      try {
+        const personId = document.getElementById("personId").value.trim();
+        const images = Array.from(document.getElementById("images").files || []);
+        if (!personId) {
+          setResult("enrollResult", "Bitte eine Person ID eingeben.");
+          return;
+        }
+        if (!images || images.length === 0) {
+          setResult("enrollResult", "Bitte mindestens ein Bild auswählen.");
+          return;
+        }
+        submitButton.disabled = true;
+        const results = [];
+
+        for (let index = 0; index < images.length; index += 1) {
+          const image = images[index];
+          setResult("enrollResult", `Lade und analysiere Bild ${index + 1}/${images.length}: ${image.name}`);
+          const form = new FormData();
+          form.append("person_id", personId);
+          form.append("note", `setup-upload:${image.name}`);
+          form.append("image", image, image.name);
+
+          try {
+            const response = await fetch("/api/enroll", { method: "POST", body: form });
+            const data = await response.json();
+            results.push({ filename: image.name, status_code: response.status, ...data });
+          } catch (error) {
+            results.push({ filename: image.name, ok: false, error: String(error) });
+          }
+
+          setResult("enrollResult", {
+            ok: results.some((result) => result.ok),
+            person_id: personId,
+            processed_images: index + 1,
+            total_images: images.length,
+            results,
+          });
+        }
+
+        loadStatus().catch((error) => {
+          document.getElementById("status").innerHTML = pill("Status-Refresh fehlgeschlagen: " + error, false);
+        });
+      } catch (error) {
+        setResult("enrollResult", "Fehler beim Anlernen: " + error);
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+
+    document.getElementById("espPreviewButton").addEventListener("click", () => {
+      setResult("espEnrollResult", "Hole ESP-Kamerabild...");
+      const preview = document.getElementById("espPreview");
+      preview.onload = () => setResult("espEnrollResult", "ESP-Kamerabild geladen.");
+      preview.onerror = () => setResult("espEnrollResult", "ESP-Kamerabild konnte nicht geladen werden.");
+      preview.src = "/api/live-snapshot?t=" + Date.now();
+    });
+
+    function resetEspEnrollUi(message) {
+      espEnrollState = {
+        active: false,
+        personId: "",
+        sessionId: "",
+        stepIndex: 0,
+        results: [],
+      };
+      document.getElementById("espDiscardSessionButton").hidden = true;
+      document.querySelector("#espEnrollForm button[type='submit']").textContent = "Geführte Aufnahme starten";
+      if (message) {
+        setEspGuide(message);
+      }
+    }
+
+    async function discardCurrentEspSession(confirmBeforeDiscard) {
+      if (!espEnrollState.sessionId) {
+        return { ok: false, error: "Keine aktive ESP-Anlernsession zum Verwerfen vorhanden." };
+      }
+      if (confirmBeforeDiscard && !confirm("Aktuelle ESP-Anlernsession wirklich verwerfen? Bereits gespeicherte Referenzen dieser Session werden gelöscht.")) {
+        return { ok: false, cancelled: true };
+      }
+
+      const response = await fetch("/api/enroll-session/discard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          person_id: espEnrollState.personId,
+          session_id: espEnrollState.sessionId,
+        }),
+      });
+      return response.json();
+    }
+
+    document.getElementById("espEnrollForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submitButton = event.currentTarget.querySelector("button[type='submit']");
+      const personId = document.getElementById("espPersonId").value.trim();
+      if (!personId) {
+        setResult("espEnrollResult", "Bitte eine Person ID eingeben.");
+        return;
+      }
+
+      if (!espEnrollState.active || espEnrollState.personId !== personId) {
+        espEnrollState = {
+          active: true,
+          personId,
+          sessionId: "esp-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+          stepIndex: 0,
+          results: [],
+        };
+        setEspGuide("Erster Schritt: " + espCaptureGuide[0] + " Bereite dich in Ruhe vor und klicke dann auf Aufnahme starten.");
+        setResult("espEnrollResult", "Geführte Session vorbereitet. Es wurde noch kein Bild aufgenommen.");
+        submitButton.textContent = "Aufnahme starten";
+        document.getElementById("espDiscardSessionButton").hidden = false;
+        return;
+      }
+
+      if (espEnrollState.stepIndex >= espCaptureGuide.length) {
+        espEnrollState.active = false;
+        submitButton.textContent = "Geführte Aufnahme starten";
+        document.getElementById("espDiscardSessionButton").hidden = true;
+        setEspGuide("Geführte Aufnahme ist bereits abgeschlossen. Starte erneut, wenn du weitere Referenzen aufnehmen möchtest.");
+        return;
+      }
+
+      try {
+        submitButton.disabled = true;
+        const instruction = espCaptureGuide[espEnrollState.stepIndex];
+        setEspGuide(instruction + " Wenn du bereit bist, wird jetzt genau ein Bild aufgenommen.");
+        setResult("espEnrollResult", `Nehme Bild ${espEnrollState.stepIndex + 1}/12 auf...`);
+
+        const form = new FormData();
+        form.append("person_id", espEnrollState.personId);
+        form.append("step", String(espEnrollState.stepIndex + 1));
+        form.append("instruction", instruction);
+        form.append("session_id", espEnrollState.sessionId);
+
+        const response = await fetch("/api/enroll-from-esp", { method: "POST", body: form });
+        const data = await response.json();
+        espEnrollState.results.push({
+          step: espEnrollState.stepIndex + 1,
+          instruction,
+          status_code: response.status,
+          ...data,
+        });
+
+        if (!response.ok || !data.ok) {
+          const failedStep = espEnrollState.stepIndex + 1;
+          const failedResults = espEnrollState.results.slice();
+          const discardResult = await discardCurrentEspSession(false);
+          resetEspEnrollUi("Aufnahme fehlgeschlagen. Die aktuelle Session wurde verworfen, damit keine unvollständigen Referenzen gespeichert bleiben.");
+          setResult("espEnrollResult", {
+            ok: false,
+            error: data.error || "ESP-Aufnahme konnte nicht gespeichert werden.",
+            failed_step: failedStep,
+            discard_result: discardResult,
+            results: failedResults,
+          });
+          loadStatus().catch((error) => {
+            document.getElementById("status").innerHTML = pill("Status-Refresh fehlgeschlagen: " + error, false);
+          });
+          return;
+        }
+
+        if (data.latest_image_url) {
+          document.getElementById("espPreview").src = data.latest_image_url + "?t=" + Date.now();
+        }
+
+        espEnrollState.stepIndex += 1;
+        const complete = espEnrollState.stepIndex >= espCaptureGuide.length;
+        setResult("espEnrollResult", {
+          ok: espEnrollState.results.some((result) => result.ok),
+          person_id: espEnrollState.personId,
+          processed_images: espEnrollState.stepIndex,
+          total_images: espCaptureGuide.length,
+          next_instruction: complete ? null : espCaptureGuide[espEnrollState.stepIndex],
+          results: espEnrollState.results,
+        });
+
+        if (complete) {
+          setEspGuide("Alle 12 Bilder aufgenommen. Du kannst den Ablauf bei Bedarf erneut starten.");
+          submitButton.textContent = "Geführte Aufnahme erneut starten";
+          document.getElementById("espDiscardSessionButton").hidden = false;
+          espEnrollState.active = false;
+        } else {
+          setEspGuide("Nächster Schritt: " + espCaptureGuide[espEnrollState.stepIndex] + " Bereite dich in Ruhe vor und klicke dann erneut.");
+          submitButton.textContent = `Bild ${espEnrollState.stepIndex + 1}/12 aufnehmen`;
+        }
+        loadStatus().catch((error) => {
+          document.getElementById("status").innerHTML = pill("Status-Refresh fehlgeschlagen: " + error, false);
+        });
+      } catch (error) {
+        let discardResult = null;
+        if (espEnrollState.sessionId) {
+          try {
+            discardResult = await discardCurrentEspSession(false);
+          } catch (discardError) {
+            discardResult = { ok: false, error: String(discardError) };
+          }
+        }
+        resetEspEnrollUi("Aufnahmefehler. Die aktuelle Session wurde verworfen, damit keine unvollständigen Referenzen gespeichert bleiben.");
+        setResult("espEnrollResult", {
+          ok: false,
+          error: "Fehler beim ESP-Anlernen: " + error,
+          discard_result: discardResult,
+        });
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+
+    document.getElementById("espDiscardSessionButton").addEventListener("click", async () => {
+      try {
+        setResult("espEnrollResult", "Verwerfe ESP-Anlernsession...");
+        const data = await discardCurrentEspSession(true);
+        if (data.cancelled) {
+          setResult("espEnrollResult", "Verwerfen abgebrochen.");
+          return;
+        }
+        setResult("espEnrollResult", data);
+        resetEspEnrollUi("Session verworfen. Du kannst neu starten, wenn dein Gesicht gut sichtbar ist.");
+        await loadStatus();
+      } catch (error) {
+        setResult("espEnrollResult", "Fehler beim Verwerfen der Session: " + error);
+      }
+    });
+
+    loadStatus().catch((error) => {
+      document.getElementById("status").innerHTML = pill("Statusfehler: " + error, false);
+    });
+  </script>
+</body>
+</html>
+"""
+
 
 @dataclass
 class VerificationResult:
@@ -331,25 +1073,157 @@ class VerificationResult:
   error: Optional[str] = None
 
 
+@dataclass
+class AppConfig:
+  telegram_bot_token: str = ""
+  telegram_chat_id: str = ""
+  esp_snapshot_url: str = DEFAULT_ESP_SNAPSHOT_URL
+  similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD
+
+
 class FaceVerifierService:
   def __init__(
       self,
       db_path: Path,
+      config_path: Path = DEFAULT_CONFIG_PATH,
       model_name: str = DEFAULT_MODEL_NAME,
       similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
   ) -> None:
     self.db_path = Path(db_path)
+    self.config_path = Path(config_path)
     self.captures_dir = DEFAULT_CAPTURES_DIR
     self.model_name = model_name
     self.similarity_threshold = similarity_threshold
-    self.telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    self.telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    self.config = self._load_config(similarity_threshold)
+    self.telegram_bot_token = self.config.telegram_bot_token
+    self.telegram_chat_id = self.config.telegram_chat_id
+    self.esp_snapshot_url = self.config.esp_snapshot_url
+    self.similarity_threshold = self.config.similarity_threshold
     self._face_app: Optional[FaceAnalysis] = None
     self.captures_dir.mkdir(parents=True, exist_ok=True)
 
   @staticmethod
   def _debug(message: str) -> None:
     print(f"[face-verifier] {message}", flush=True)
+
+  def _load_config(self, fallback_similarity_threshold: Optional[float] = None) -> AppConfig:
+    payload = {}
+    if self.config_path.exists():
+      try:
+        payload = json.loads(self.config_path.read_text(encoding="utf-8"))
+      except (OSError, json.JSONDecodeError) as exc:
+        self._debug(f"config load failed, using fallbacks: {exc}")
+
+    telegram_bot_token = str(
+        payload.get("telegram_bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    ).strip()
+    telegram_chat_id = str(
+        payload.get("telegram_chat_id") or os.environ.get("TELEGRAM_CHAT_ID", "")
+    ).strip()
+    esp_snapshot_url = str(
+        payload.get("esp_snapshot_url") or os.environ.get("ESP_SNAPSHOT_URL", DEFAULT_ESP_SNAPSHOT_URL)
+    ).strip()
+    threshold_value = payload.get("similarity_threshold")
+    if threshold_value is None:
+      threshold_value = os.environ.get("SIMILARITY_THRESHOLD")
+    try:
+      similarity_threshold = float(
+          threshold_value
+          if threshold_value is not None and str(threshold_value).strip()
+          else (
+              fallback_similarity_threshold
+              if fallback_similarity_threshold is not None
+              else DEFAULT_SIMILARITY_THRESHOLD
+          )
+      )
+    except (TypeError, ValueError):
+      similarity_threshold = (
+          fallback_similarity_threshold
+          if fallback_similarity_threshold is not None
+          else DEFAULT_SIMILARITY_THRESHOLD
+      )
+    similarity_threshold = min(max(similarity_threshold, 0.0), 1.0)
+
+    return AppConfig(
+        telegram_bot_token=telegram_bot_token,
+        telegram_chat_id=telegram_chat_id,
+        esp_snapshot_url=esp_snapshot_url or DEFAULT_ESP_SNAPSHOT_URL,
+        similarity_threshold=similarity_threshold,
+    )
+
+  def reload_config(self) -> None:
+    self.config = self._load_config(self.similarity_threshold)
+    self.telegram_bot_token = self.config.telegram_bot_token
+    self.telegram_chat_id = self.config.telegram_chat_id
+    self.esp_snapshot_url = self.config.esp_snapshot_url
+    self.similarity_threshold = self.config.similarity_threshold
+
+  def update_config(
+      self,
+      telegram_bot_token: Optional[str] = None,
+      telegram_chat_id: Optional[str] = None,
+      esp_snapshot_url: Optional[str] = None,
+      similarity_threshold: Optional[str] = None,
+  ) -> dict:
+    current = self._load_config(self.similarity_threshold)
+    next_similarity_threshold = current.similarity_threshold
+    if similarity_threshold is not None and str(similarity_threshold).strip():
+      try:
+        next_similarity_threshold = min(max(float(similarity_threshold), 0.0), 1.0)
+      except ValueError:
+        raise ValueError("similarity_threshold muss eine Zahl zwischen 0 und 1 sein.")
+
+    next_config = {
+        "telegram_bot_token": (
+            telegram_bot_token.strip()
+            if telegram_bot_token is not None and telegram_bot_token.strip()
+            else current.telegram_bot_token
+        ),
+        "telegram_chat_id": (
+            telegram_chat_id.strip()
+            if telegram_chat_id is not None and telegram_chat_id.strip()
+            else current.telegram_chat_id
+        ),
+        "esp_snapshot_url": (
+            esp_snapshot_url.strip()
+            if esp_snapshot_url is not None and esp_snapshot_url.strip()
+            else current.esp_snapshot_url
+        ),
+        "similarity_threshold": next_similarity_threshold,
+    }
+
+    self.config_path.write_text(json.dumps(next_config, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    try:
+      os.chmod(self.config_path, 0o600)
+    except OSError as exc:
+      self._debug(f"config chmod failed: {exc}")
+
+    self.reload_config()
+    return self.config_status()
+
+  def config_status(self) -> dict:
+    return {
+        "config_path": str(self.config_path),
+        "config_exists": self.config_path.exists(),
+        "telegram_enabled": self.telegram_enabled,
+        "telegram_bot_token_masked": self._mask_secret(self.telegram_bot_token),
+        "telegram_chat_id": self.telegram_chat_id,
+        "esp_snapshot_url": self.esp_snapshot_url,
+        "similarity_threshold": self.similarity_threshold,
+        "setup_complete": self.setup_complete,
+    }
+
+  @property
+  def setup_complete(self) -> bool:
+    return self.telegram_enabled and len(self.list_person_ids()) > 0
+
+  @staticmethod
+  def _mask_secret(value: str) -> str:
+    if not value:
+      return ""
+    if len(value) <= 8:
+      return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
 
   def init_db(self) -> None:
     with sqlite3.connect(self.db_path) as connection:
@@ -432,6 +1306,15 @@ class FaceVerifierService:
           )
           """
       )
+      connection.execute(
+          """
+          CREATE TABLE IF NOT EXISTS person_settings (
+            person_id TEXT PRIMARY KEY,
+            active INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
+          )
+          """
+      )
       self._ensure_column(
           connection,
           table_name="ring_events",
@@ -444,6 +1327,7 @@ class FaceVerifierService:
     image = self._decode_image(image_bytes)
     face = self._extract_primary_face(image)
     embedding = self._get_normalized_embedding(face)
+    now = self._utc_now()
 
     with sqlite3.connect(self.db_path) as connection:
       connection.execute(
@@ -451,7 +1335,17 @@ class FaceVerifierService:
           INSERT INTO reference_embeddings (person_id, embedding, note, created_at)
           VALUES (?, ?, ?, ?)
           """,
-          (person_id, self._serialize_embedding(embedding), note, self._utc_now()),
+          (person_id, self._serialize_embedding(embedding), note, now),
+      )
+      connection.execute(
+          """
+          INSERT INTO person_settings (person_id, active, updated_at)
+          VALUES (?, 1, ?)
+          ON CONFLICT(person_id) DO UPDATE SET
+            active = 1,
+            updated_at = excluded.updated_at
+          """,
+          (person_id, now),
       )
       connection.commit()
 
@@ -500,6 +1394,19 @@ class FaceVerifierService:
 
       probe_embedding = self._get_normalized_embedding(faces[0])
       if requested_person_id:
+        if not self._person_is_active(requested_person_id):
+          self._debug(f"verify aborted because person is inactive: {requested_person_id}")
+          result = VerificationResult(
+              person_id=requested_person_id,
+              matched=False,
+              similarity=None,
+              threshold=similarity_threshold,
+              reference_count=self._reference_count(requested_person_id),
+              detected_faces=len(faces),
+              error="Person ist deaktiviert.",
+          )
+          self._log_verification(result)
+          return result
         candidate_people = [requested_person_id]
       else:
         candidate_people = self.list_person_ids()
@@ -552,9 +1459,9 @@ class FaceVerifierService:
             reference_count=0,
             detected_faces=len(faces),
             error=(
-                "Keine Referenz-Embeddings fuer diese Person gespeichert."
+                "Keine Referenz-Embeddings für diese Person gespeichert."
                 if requested_person_id
-                else "Keine gueltigen Referenz-Embeddings gespeichert."
+                else "Keine gültigen Referenz-Embeddings gespeichert."
             ),
         )
         self._log_verification(result)
@@ -594,10 +1501,16 @@ class FaceVerifierService:
     with sqlite3.connect(self.db_path) as connection:
       rows = connection.execute(
           """
-          SELECT person_id, COUNT(*) AS reference_count, MAX(created_at) AS updated_at
+          SELECT
+            reference_embeddings.person_id,
+            COUNT(*) AS reference_count,
+            MAX(reference_embeddings.created_at) AS updated_at,
+            COALESCE(person_settings.active, 1) AS active
           FROM reference_embeddings
-          GROUP BY person_id
-          ORDER BY person_id
+          LEFT JOIN person_settings
+            ON person_settings.person_id = reference_embeddings.person_id
+          GROUP BY reference_embeddings.person_id, COALESCE(person_settings.active, 1)
+          ORDER BY reference_embeddings.person_id
           """
       ).fetchall()
 
@@ -606,12 +1519,110 @@ class FaceVerifierService:
             "person_id": row[0],
             "reference_count": row[1],
             "updated_at": row[2],
+            "active": bool(row[3]),
         }
         for row in rows
     ]
 
-  def list_person_ids(self) -> list[str]:
-    return [entry["person_id"] for entry in self.list_people()]
+  def list_person_ids(self, include_inactive: bool = False) -> list[str]:
+    return [
+        entry["person_id"]
+        for entry in self.list_people()
+        if include_inactive or entry["active"]
+    ]
+
+  def set_person_active(self, person_id: str, active: bool) -> dict:
+    if self._reference_count(person_id) == 0:
+      raise ValueError("Person hat keine gespeicherten Referenzbilder.")
+
+    with sqlite3.connect(self.db_path) as connection:
+      connection.execute(
+          """
+          INSERT INTO person_settings (person_id, active, updated_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(person_id) DO UPDATE SET
+            active = excluded.active,
+            updated_at = excluded.updated_at
+          """,
+          (person_id, int(active), self._utc_now()),
+      )
+      connection.commit()
+
+    return {"person_id": person_id, "active": active}
+
+  def delete_person(self, person_id: str) -> dict:
+    with sqlite3.connect(self.db_path) as connection:
+      cursor = connection.execute(
+          "DELETE FROM reference_embeddings WHERE person_id = ?",
+          (person_id,),
+      )
+      deleted_references = cursor.rowcount
+      connection.execute(
+          "DELETE FROM person_settings WHERE person_id = ?",
+          (person_id,),
+      )
+      connection.commit()
+
+    return {"person_id": person_id, "deleted_references": deleted_references}
+
+  def discard_enroll_session(self, person_id: str, session_id: str) -> dict:
+    if not person_id:
+      raise ValueError("person_id fehlt.")
+    if not session_id:
+      raise ValueError("session_id fehlt.")
+
+    marker = f"session:{session_id}"
+    with sqlite3.connect(self.db_path) as connection:
+      connection.execute(
+          """
+          INSERT INTO app_state (key, value)
+          VALUES (?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+          """,
+          (self._discarded_session_key(session_id), self._utc_now()),
+      )
+      cursor = connection.execute(
+          """
+          DELETE FROM reference_embeddings
+          WHERE person_id = ?
+            AND note LIKE ?
+          """,
+          (person_id, f"%{marker}%"),
+      )
+      deleted_references = cursor.rowcount
+      remaining_references = connection.execute(
+          "SELECT COUNT(*) FROM reference_embeddings WHERE person_id = ?",
+          (person_id,),
+      ).fetchone()[0]
+      if remaining_references == 0:
+        connection.execute(
+            "DELETE FROM person_settings WHERE person_id = ?",
+            (person_id,),
+        )
+      connection.commit()
+
+    return {
+        "person_id": person_id,
+        "session_id": session_id,
+        "deleted_references": deleted_references,
+        "remaining_references": remaining_references,
+    }
+
+  def _discarded_session_key(self, session_id: str) -> str:
+    return f"discarded_enroll_session:{session_id}"
+
+  def _is_enroll_session_discarded(self, session_id: Optional[str]) -> bool:
+    if not session_id:
+      return False
+    return self._get_app_state(self._discarded_session_key(session_id)) is not None
+
+  def _person_is_active(self, person_id: str) -> bool:
+    with sqlite3.connect(self.db_path) as connection:
+      row = connection.execute(
+          "SELECT active FROM person_settings WHERE person_id = ?",
+          (person_id,),
+      ).fetchone()
+    return row is None or bool(row[0])
 
   def handle_ring_capture(
       self,
@@ -827,9 +1838,86 @@ class FaceVerifierService:
         "recent_events": [self._event_to_dict(row) for row in recent_events],
     }
 
-  def fetch_live_snapshot(self) -> bytes:
-    with urlrequest.urlopen(DEFAULT_ESP_SNAPSHOT_URL, timeout=8) as response:
-      return response.read()
+  def fetch_live_snapshot(self, attempts: int = 3, retry_delay_s: float = 1.0) -> bytes:
+    separator = "&" if "?" in self.esp_snapshot_url else "?"
+    last_error: Optional[Exception] = None
+
+    for attempt in range(1, attempts + 1):
+      snapshot_url = f"{self.esp_snapshot_url}{separator}t={int(datetime.now(timezone.utc).timestamp() * 1000)}"
+      try:
+        with urlrequest.urlopen(snapshot_url, timeout=8) as response:
+          return response.read()
+      except Exception as exc:
+        last_error = exc
+        self._debug(f"snapshot fetch failed attempt={attempt}/{attempts}: {exc}")
+        if attempt < attempts:
+          time.sleep(retry_delay_s)
+
+    raise last_error if last_error is not None else RuntimeError("Snapshot konnte nicht geladen werden.")
+
+  def enroll_from_esp(
+      self,
+      person_id: str,
+      count: int = 1,
+      note: Optional[str] = None,
+      session_id: Optional[str] = None,
+  ) -> dict:
+    if not person_id:
+      raise ValueError("person_id fehlt.")
+    if count < 1 or count > 10:
+      raise ValueError("count muss zwischen 1 und 10 liegen.")
+
+    self._debug(f"enroll_from_esp start person_id={person_id} count={count} url={self.esp_snapshot_url}")
+    results = []
+    success_count = 0
+    latest_image_url = None
+
+    for index in range(1, count + 1):
+      try:
+        if self._is_enroll_session_discarded(session_id):
+          raise RuntimeError("Anlernsession wurde verworfen.")
+
+        image_bytes = self.fetch_live_snapshot()
+        if self._is_enroll_session_discarded(session_id):
+          raise RuntimeError("Anlernsession wurde verworfen.")
+
+        image_filename = (
+            f"reference_{person_id}_{index}_{int(datetime.now(timezone.utc).timestamp() * 1000)}.jpg"
+        )
+        image_path = self.captures_dir / image_filename
+        image_path.write_bytes(image_bytes)
+
+        self._debug(
+            f"enroll_from_esp image {index}/{count} bytes={len(image_bytes)} filename={image_filename}"
+        )
+        if self._is_enroll_session_discarded(session_id):
+          raise RuntimeError("Anlernsession wurde verworfen.")
+
+        payload = self.enroll_embedding(
+            person_id=person_id,
+            image_bytes=image_bytes,
+            note=note or f"esp-camera:{image_filename}",
+        )
+        success_count += 1
+        latest_image_url = f"/captures/{image_filename}"
+        results.append({"ok": True, "image_url": latest_image_url, **payload})
+        self._debug(
+            f"enroll_from_esp image {index}/{count} ok reference_count={payload['reference_count']}"
+        )
+      except Exception as exc:
+        self._debug(f"enroll_from_esp image {index}/{count} failed: {exc}")
+        results.append({"ok": False, "error": str(exc)})
+
+    self._debug(f"enroll_from_esp done person_id={person_id} successful={success_count}/{count}")
+    return {
+        "ok": success_count > 0,
+        "person_id": person_id,
+        "requested_images": count,
+        "successful_images": success_count,
+        "failed_images": count - success_count,
+        "latest_image_url": latest_image_url,
+        "results": results,
+    }
 
   def network_status(self) -> dict:
     target_host = "api.telegram.org"
@@ -850,7 +1938,7 @@ class FaceVerifierService:
       status["local_ip"] = probe_socket.getsockname()[0]
       probe_socket.close()
     except OSError as exc:
-      status["error"] = f"Kein Uplink fuer Internet-Test: {exc}"
+      status["error"] = f"Kein Uplink für Internet-Test: {exc}"
       return status
 
     try:
@@ -858,7 +1946,7 @@ class FaceVerifierService:
       status["resolved_ip"] = resolved_ip
       status["dns_ok"] = True
     except OSError as exc:
-      status["error"] = f"DNS-Aufloesung fuer {target_host} fehlgeschlagen: {exc}"
+      status["error"] = f"DNS-Auflösung für {target_host} fehlgeschlagen: {exc}"
       return status
 
     try:
@@ -1042,6 +2130,37 @@ class FaceVerifierService:
       raise RuntimeError(f"telegram api error: {payload}")
     return int(payload["result"]["message_id"])
 
+  def send_telegram_test_message(self) -> dict:
+    if not self.telegram_enabled:
+      return {"ok": False, "error": "Telegram ist nicht vollstaendig konfiguriert."}
+
+    network_status = self.network_status()
+    if not network_status["internet_ok"]:
+      return {
+          "ok": False,
+          "error": "Kein Internet/Uplink für Telegram-Test.",
+          "network": network_status,
+      }
+
+    try:
+      response = requests.post(
+          self._telegram_api_url("sendMessage"),
+          data={
+              "chat_id": self.telegram_chat_id,
+              "text": "Smart Doorbell Telegram-Test: Verbindung funktioniert.",
+          },
+          timeout=15,
+      )
+      response.raise_for_status()
+      payload = response.json()
+    except Exception as exc:
+      return {"ok": False, "error": str(exc), "network": network_status}
+
+    if not payload.get("ok"):
+      return {"ok": False, "error": f"Telegram API meldet Fehler: {payload}", "network": network_status}
+
+    return {"ok": True, "message": "Telegram-Testnachricht wurde gesendet.", "network": network_status}
+
   def _sync_telegram_updates(self) -> None:
     if not self.telegram_enabled:
       return
@@ -1099,7 +2218,7 @@ class FaceVerifierService:
     try:
       event_id = int(parts[2])
     except ValueError:
-      self._answer_callback_query(callback_id, "Ungueltige Ereignis-ID.")
+      self._answer_callback_query(callback_id, "Ungültige Ereignis-ID.")
       return
 
     decision = parts[1]
@@ -1282,7 +2401,16 @@ def create_app(service: FaceVerifierService) -> Flask:
 
   @app.get("/")
   def dashboard():
+    if not service.setup_complete:
+      return redirect("/setup")
     response = make_response(DEFAULT_DASHBOARD_HTML)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+  @app.get("/setup")
+  def setup_page():
+    response = make_response(DEFAULT_SETUP_HTML)
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     return response
@@ -1297,6 +2425,8 @@ def create_app(service: FaceVerifierService) -> Flask:
             "threshold": service.similarity_threshold,
             "db_path": str(service.db_path),
             "telegram_enabled": service.telegram_enabled,
+            "setup_complete": service.setup_complete,
+            "config": service.config_status(),
             "network": network_status,
         }
     )
@@ -1309,6 +2439,69 @@ def create_app(service: FaceVerifierService) -> Flask:
   @app.get("/api/persons")
   def list_people():
     return jsonify({"people": service.list_people()})
+
+  @app.post("/api/persons/<path:person_id>/active")
+  def set_person_active(person_id: str):
+    payload = request.get_json(silent=True) or request.form
+    active_value = payload.get("active")
+    if isinstance(active_value, bool):
+      active = active_value
+    else:
+      active = str(active_value).lower() in {"1", "true", "yes", "on", "active"}
+
+    try:
+      result = service.set_person_active(person_id=person_id, active=active)
+      return jsonify({"ok": True, **result})
+    except Exception as exc:
+      return jsonify({"ok": False, "error": str(exc)}), 400
+
+  @app.delete("/api/persons/<path:person_id>")
+  def delete_person(person_id: str):
+    result = service.delete_person(person_id=person_id)
+    if result["deleted_references"] == 0:
+      return jsonify({"ok": False, "error": "Person oder Referenzbilder nicht gefunden.", **result}), 404
+    return jsonify({"ok": True, **result})
+
+  @app.post("/api/enroll-session/discard")
+  def discard_enroll_session():
+    payload = request.get_json(silent=True) or request.form
+    try:
+      result = service.discard_enroll_session(
+          person_id=str(payload.get("person_id") or ""),
+          session_id=str(payload.get("session_id") or ""),
+      )
+      return jsonify({"ok": True, **result})
+    except Exception as exc:
+      return jsonify({"ok": False, "error": str(exc)}), 400
+
+  @app.get("/api/config")
+  def config_status():
+    return jsonify(service.config_status())
+
+  @app.post("/api/config")
+  def save_config():
+    payload = request.get_json(silent=True) or request.form
+    telegram_bot_token = payload.get("telegram_bot_token")
+    telegram_chat_id = payload.get("telegram_chat_id")
+    esp_snapshot_url = payload.get("esp_snapshot_url")
+    similarity_threshold = payload.get("similarity_threshold")
+
+    try:
+      status = service.update_config(
+          telegram_bot_token=telegram_bot_token,
+          telegram_chat_id=telegram_chat_id,
+          esp_snapshot_url=esp_snapshot_url,
+          similarity_threshold=similarity_threshold,
+      )
+    except Exception as exc:
+      return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify({"ok": True, **status})
+
+  @app.post("/api/test-telegram")
+  def test_telegram():
+    payload = service.send_telegram_test_message()
+    return jsonify(payload), (200 if payload.get("ok") else 400)
 
   @app.get("/api/dashboard")
   def dashboard_data():
@@ -1339,20 +2532,102 @@ def create_app(service: FaceVerifierService) -> Flask:
 
   @app.post("/api/enroll")
   def enroll():
+    service._debug("enroll request received")
     person_id = request.form.get("person_id") or request.headers.get("X-Person-Id")
     note = request.form.get("note")
     if not person_id:
       return jsonify({"ok": False, "error": "person_id fehlt."}), 400
 
+    filename = request.files["image"].filename if "image" in request.files else "raw-request-body"
     image_bytes = _read_image_bytes()
     if image_bytes is None:
-      return jsonify({"ok": False, "error": "Es wurde kein Bild uebergeben."}), 400
+      return jsonify({"ok": False, "error": "Es wurde kein Bild übergeben."}), 400
 
+    service._debug(f"enroll start person_id={person_id} filename={filename} bytes={len(image_bytes)}")
     try:
       payload = service.enroll_embedding(person_id=person_id, image_bytes=image_bytes, note=note)
+      service._debug(f"enroll ok person_id={person_id} filename={filename} reference_count={payload['reference_count']}")
       return jsonify({"ok": True, **payload}), 201
     except Exception as exc:
+      service._debug(f"enroll failed person_id={person_id} filename={filename}: {exc}")
       return jsonify({"ok": False, "error": str(exc)}), 400
+
+  @app.post("/api/enroll-batch")
+  def enroll_batch():
+    service._debug("enroll_batch request received")
+    person_id = request.form.get("person_id") or request.headers.get("X-Person-Id")
+    note = request.form.get("note")
+    if not person_id:
+      return jsonify({"ok": False, "error": "person_id fehlt."}), 400
+
+    uploaded_files = request.files.getlist("images") or request.files.getlist("image")
+    if not uploaded_files:
+      return jsonify({"ok": False, "error": "Es wurden keine Bilder übergeben."}), 400
+
+    service._debug(f"enroll_batch start person_id={person_id} images={len(uploaded_files)}")
+    results = []
+    success_count = 0
+    for index, uploaded_file in enumerate(uploaded_files, start=1):
+      filename = uploaded_file.filename or f"image_{index}"
+      image_bytes = uploaded_file.read()
+      service._debug(f"enroll_batch image {index}/{len(uploaded_files)} filename={filename} bytes={len(image_bytes)}")
+      if not image_bytes:
+        results.append({"filename": filename, "ok": False, "error": "Datei ist leer."})
+        continue
+
+      try:
+        payload = service.enroll_embedding(
+            person_id=person_id,
+            image_bytes=image_bytes,
+            note=note or f"setup-upload:{filename}",
+        )
+        success_count += 1
+        service._debug(f"enroll_batch image {index}/{len(uploaded_files)} ok reference_count={payload['reference_count']}")
+        results.append({"filename": filename, "ok": True, **payload})
+      except Exception as exc:
+        service._debug(f"enroll_batch image {index}/{len(uploaded_files)} failed: {exc}")
+        results.append({"filename": filename, "ok": False, "error": str(exc)})
+
+    service._debug(
+        f"enroll_batch done person_id={person_id} successful={success_count}/{len(uploaded_files)}"
+    )
+    return jsonify(
+        {
+            "ok": success_count > 0,
+            "person_id": person_id,
+            "received_images": len(uploaded_files),
+            "successful_images": success_count,
+            "failed_images": len(uploaded_files) - success_count,
+            "results": results,
+        }
+    ), (201 if success_count > 0 else 400)
+
+  @app.post("/api/enroll-from-esp")
+  def enroll_from_esp():
+    person_id = request.form.get("person_id") or request.headers.get("X-Person-Id")
+    count_value = request.form.get("count") or request.args.get("count") or "1"
+    step = request.form.get("step") or request.args.get("step")
+    instruction = request.form.get("instruction") or request.args.get("instruction")
+    session_id = request.form.get("session_id") or request.args.get("session_id")
+    note_parts = ["esp-camera"]
+    if session_id:
+      note_parts.append(f"session:{session_id}")
+    if step:
+      note_parts.append(f"step:{step}")
+    if instruction:
+      note_parts.append(instruction)
+    try:
+      count = int(count_value)
+      payload = service.enroll_from_esp(
+          person_id=person_id or "",
+          count=count,
+          note=" | ".join(note_parts),
+          session_id=session_id,
+      )
+    except Exception as exc:
+      return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify(payload), (201 if payload["ok"] else 400)
 
   @app.post("/api/verify")
   def verify():
@@ -1364,7 +2639,7 @@ def create_app(service: FaceVerifierService) -> Flask:
 
     image_bytes = _read_image_bytes()
     if image_bytes is None:
-      return jsonify({"ok": False, "error": "Es wurde kein Bild uebergeben."}), 400
+      return jsonify({"ok": False, "error": "Es wurde kein Bild übergeben."}), 400
 
     threshold_value = request.form.get("threshold") or request.args.get("threshold")
     threshold = float(threshold_value) if threshold_value else None
@@ -1396,7 +2671,7 @@ def create_app(service: FaceVerifierService) -> Flask:
     )
     image_bytes = _read_image_bytes()
     if image_bytes is None:
-      return jsonify({"ok": False, "error": "Es wurde kein Bild uebergeben."}), 400
+      return jsonify({"ok": False, "error": "Es wurde kein Bild übergeben."}), 400
 
     sequence_index = int(request.form.get("sequence") or request.args.get("sequence") or "1")
     total_images = int(request.form.get("total") or request.args.get("total") or "1")
@@ -1437,7 +2712,7 @@ def create_app(service: FaceVerifierService) -> Flask:
     try:
       event_id = int(event_id_value)
     except ValueError:
-      return jsonify({"ok": False, "error": "event_id ist ungueltig."}), 400
+      return jsonify({"ok": False, "error": "event_id ist ungültig."}), 400
 
     return jsonify(service.get_event_decision(event_id))
 
@@ -1456,12 +2731,13 @@ def create_app(service: FaceVerifierService) -> Flask:
 def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(description="Face verification prototype for Raspberry Pi 4.")
   parser.add_argument("--db-path", default=str(DEFAULT_DB_PATH), help="Pfad zur SQLite-Datenbank.")
+  parser.add_argument("--config-path", default=str(DEFAULT_CONFIG_PATH), help="Pfad zur lokalen Konfigurationsdatei.")
   parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME, help="InsightFace-Modellname.")
   parser.add_argument(
       "--threshold",
       type=float,
       default=DEFAULT_SIMILARITY_THRESHOLD,
-      help="Cosine-Similarity-Schwelle fuer match/no_match.",
+      help="Cosine-Similarity-Schwelle für match/no_match.",
   )
 
   subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1488,6 +2764,7 @@ def main() -> None:
   args = parse_args()
   service = FaceVerifierService(
       db_path=Path(args.db_path),
+      config_path=Path(args.config_path),
       model_name=args.model_name,
       similarity_threshold=args.threshold,
   )

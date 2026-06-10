@@ -1,0 +1,6 @@
+{
+  "telegram_bot_token": "",
+  "telegram_chat_id": "",
+  "esp_snapshot_url": "http://10.42.0.172/snapshot",
+  "similarity_threshold": 0.6
+}

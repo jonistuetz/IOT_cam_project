@@ -3,3 +3,15 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Local runtime configuration and generated Raspberry Pi data
+raspberry_pi/config.json
+raspberry_pi/*.db
+raspberry_pi/*.sqlite
+raspberry_pi/*.sqlite3
+raspberry_pi/captures/
+raspberry_pi/__pycache__/
+raspberry_pi/.venv/
+
+# Local ESP secrets
+include/secrets.h

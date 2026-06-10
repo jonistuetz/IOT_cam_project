@@ -50,6 +50,7 @@ const unsigned long kMotionIdleBeforeSleepTimeoutMs = 30000;
 const unsigned long kMotionIdlePollMs = 250;
 const unsigned long kTelegramDecisionPollIntervalMs = 2000;
 const unsigned long kTelegramDecisionTimeoutMs = 90000;
+const unsigned long kIdleDeepSleepTimeoutMs = 90000;
 const int kRemoteLogQueueSize = 24;
 const int kDiscardedFrameCount = 2;
 const int kRequiredMatchesForAccess = 2;
@@ -68,6 +69,7 @@ int gRemoteLogCount = 0;
 String gRemoteLogLine;
 bool gRemoteLogSending = false;
 unsigned long gLastRemoteLogAttemptMs = 0;
+unsigned long gLastUserActivityMs = 0;
 bool gDisplayAvailable = false;
 bool gDisplayInitAttempted = false;
 unsigned long gLastDisplayInitAttemptMs = 0;
@@ -80,6 +82,11 @@ void logPrintf(const char *format, ...);
 int jsonGetInt(const String &payload, const char *key, int fallback = -1);
 String jsonGetString(const String &payload, const char *key, const String &fallback = "");
 void waitForTelegramDecision(int eventId);
+void markUserActivity();
+
+void markUserActivity() {
+  gLastUserActivityMs = millis();
+}
 
 void logWakeupReason() {
   esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
@@ -842,12 +849,14 @@ bool ensureWifiConnected() {
 }
 
 void handleStatus() {
+  markUserActivity();
   String body = String("{\"ok\":true,\"ip\":\"") + WiFi.localIP().toString() +
                 "\",\"ring_in_progress\":" + (gRingInProgress ? "true" : "false") + "}";
   server.send(200, "application/json; charset=utf-8", body);
 }
 
 void handleSnapshot() {
+  markUserActivity();
   camera_fb_t *frame = captureFrameWithFlash();
   if (frame == nullptr) {
     logPrintln("[SNAPSHOT] Kamerabild konnte nicht gelesen werden.");
@@ -861,6 +870,7 @@ void handleSnapshot() {
 }
 
 void handleVerify() {
+  markUserActivity();
   logPrintln("[VERIFY] Anfrage vom Browser empfangen.");
   setAccessLedVerifying();
 
@@ -917,6 +927,7 @@ void handleVerify() {
 }
 
 void handleRingRequest() {
+  markUserActivity();
   String responseBody = runRingWorkflowWithAccessLed();
   bool ok = jsonHasTrue(responseBody, "ok");
   server.send(ok ? 200 : 500, "application/json; charset=utf-8", responseBody);
@@ -939,6 +950,7 @@ void handleButton() {
 
   gStableButtonState = reading;
   if (gStableButtonState == HIGH) {
+    markUserActivity();
     logPrintln("[BUTTON] Taster gedrueckt, starte Verifikation.");
     ensureI2cDisplayReady();
     displayShowWelcome();
@@ -959,6 +971,21 @@ void handleMotionSensor() {
   logPrintf("[MOTION] HC-SR501 OUT an GPIO%d: %s\n",
             kMotionSensorPin,
             reading == HIGH ? "Bewegung erkannt" : "keine Bewegung");
+}
+
+void handleIdleDeepSleep() {
+  if (gRingInProgress || gLastUserActivityMs == 0) {
+    return;
+  }
+
+  unsigned long idleMs = millis() - gLastUserActivityMs;
+  if (idleMs < kIdleDeepSleepTimeoutMs) {
+    return;
+  }
+
+  logPrintf("[SLEEP] Keine Aktivitaet seit %lu ms, gehe in Deep Sleep.\n", idleMs);
+  enterDeepSleepUntilMotion();
+  markUserActivity();
 }
 
 void startServer() {
@@ -999,6 +1026,7 @@ void setup() {
   connectToWifi();
   startServer();
   initI2cDisplay();
+  markUserActivity();
   logPrintf("[BUTTON] Bereit. Taster an GPIO%d startet die Verifikation.\n", kButtonPin);
 }
 
@@ -1008,4 +1036,5 @@ void loop() {
   handleButton();
   handleMotionSensor();
   flushRemoteLogs();
+  handleIdleDeepSleep();
 }

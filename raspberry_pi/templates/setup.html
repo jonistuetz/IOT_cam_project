@@ -1,0 +1,1226 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Doorbell Setup</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #edf2ee;
+      --card: #fffdf7;
+      --text: #1f2933;
+      --accent: #0f766e;
+      --accent-dark: #115e59;
+      --ok: #166534;
+      --bad: #991b1b;
+      --muted: #637083;
+      --line: rgba(31, 41, 51, 0.14);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Helvetica, Arial, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(15, 118, 110, 0.16), transparent 34rem),
+        linear-gradient(135deg, #f6f0df 0%, #e9f2ee 52%, #dce8e3 100%);
+      color: var(--text);
+      padding: 24px;
+    }
+    main {
+      width: min(980px, 100%);
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+    .hero, .card {
+      background: rgba(255, 253, 247, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: 0 22px 55px rgba(31, 41, 51, 0.12);
+      padding: 22px;
+    }
+    h1, h2 {
+      margin: 0 0 10px;
+      letter-spacing: 0;
+    }
+    p {
+      color: var(--muted);
+      line-height: 1.55;
+      margin: 0 0 12px;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      margin: 12px 0;
+      font-weight: 700;
+    }
+    input, button {
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      font: inherit;
+      padding: 11px 13px;
+    }
+    form button {
+      margin: 8px 8px 0 0;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 12px 0;
+    }
+    input[type="file"] {
+      background: #fff;
+    }
+    button {
+      background: var(--accent);
+      color: white;
+      border: 0;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    button.secondary {
+      background: #334155;
+    }
+    button:hover {
+      background: var(--accent-dark);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 18px;
+    }
+    .app-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .app-tile {
+      min-height: 118px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.68);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      gap: 8px;
+      padding: 14px 10px;
+      text-align: center;
+      box-shadow: 0 10px 24px rgba(31, 41, 51, 0.08);
+    }
+    .app-tile:hover, .app-tile:focus-visible {
+      background: #e5f2ef;
+      color: var(--text);
+      outline: 2px solid rgba(15, 118, 110, 0.24);
+    }
+    .app-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .app-icon svg {
+      width: 27px;
+      height: 27px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .app-icon.wifi svg {
+      width: 32px;
+      height: 32px;
+      transform: translateY(-1px);
+    }
+    .app-icon .fill {
+      fill: currentColor;
+      stroke: none;
+    }
+    .app-label {
+      font-weight: 800;
+      font-size: 14px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+      max-width: 100%;
+    }
+    .section-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    [data-section][hidden] {
+      display: none;
+    }
+    .method-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 14px 0;
+    }
+    .method-tabs button {
+      background: #dbe8e4;
+      color: var(--text);
+    }
+    .method-tabs button.active {
+      background: var(--accent);
+      color: white;
+    }
+    .method-panel[hidden] {
+      display: none;
+    }
+    .guide {
+      border-left: 4px solid var(--accent);
+      background: rgba(15, 118, 110, 0.08);
+      border-radius: 14px;
+      padding: 12px;
+      margin: 12px 0;
+      color: var(--text);
+      line-height: 1.55;
+    }
+    .guide strong {
+      font-family: Helvetica, Arial, sans-serif;
+      font-weight: 800;
+    }
+    .status {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      background: rgba(99, 112, 131, 0.12);
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 13px;
+      line-height: 1.15;
+      vertical-align: baseline;
+    }
+    .pill.ok { background: rgba(22, 101, 52, 0.12); color: var(--ok); }
+    .pill.bad { background: rgba(153, 27, 27, 0.12); color: var(--bad); }
+    .result {
+      white-space: pre-wrap;
+      background: rgba(15, 118, 110, 0.08);
+      border-radius: 16px;
+      padding: 12px;
+      min-height: 44px;
+      color: var(--text);
+    }
+    .people {
+      display: grid;
+      gap: 10px;
+    }
+    .person {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.55);
+      line-height: 1.55;
+    }
+    .person-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .person-actions button {
+      padding: 8px 10px;
+      font-size: 14px;
+    }
+    .wifi-list {
+      display: grid;
+      gap: 10px;
+      margin: 12px 0;
+    }
+    .wifi-item {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.55);
+      padding: 10px;
+      line-height: 1.55;
+    }
+    .wifi-item button {
+      margin-top: 8px;
+    }
+    .wifi-summary {
+      display: grid;
+      gap: 8px;
+    }
+    .preview {
+      width: 100%;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #111;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      margin-top: 10px;
+    }
+    .danger {
+      background: #991b1b;
+    }
+    .danger:hover {
+      background: #7f1d1d;
+    }
+    @media (max-width: 680px) {
+      body { padding: 14px; }
+      .hero, .card { padding: 18px; border-radius: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Smart Doorbell Setup</h1>
+      <p>Lokale Admin-Seite für Telegram, Zugangsschwelle, Internet-WLAN, Shutdown und Referenzbilder.</p>
+      <div id="status" class="status"></div>
+      <nav class="app-grid" aria-label="Setup-Bereiche">
+        <button class="app-tile" type="button" data-open-section="telegramSection">
+          <span class="app-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M21 4 3 11l7 2 2 7 9-16Z"></path>
+              <path d="m10 13 4-4"></path>
+            </svg>
+          </span>
+          <span class="app-label">Telegram</span>
+        </button>
+        <button class="app-tile" type="button" data-open-section="thresholdSection">
+          <span class="app-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 18h16"></path>
+              <path d="M6 16a6 6 0 0 1 12 0"></path>
+              <path d="m12 12 4-5"></path>
+              <path d="M12 16h.01"></path>
+            </svg>
+          </span>
+          <span class="app-label">Zulassungsschwelle</span>
+        </button>
+        <button class="app-tile" type="button" data-open-section="systemSection">
+          <span class="app-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 3v9"></path>
+              <path d="M6.3 7.8a8 8 0 1 0 11.4 0"></path>
+            </svg>
+          </span>
+          <span class="app-label">Shutdown</span>
+        </button>
+        <button class="app-tile" type="button" data-open-section="wifiSection">
+          <span class="app-icon wifi" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M4.5 11.5a11 11 0 0 1 15 0"></path>
+              <path d="M8 15a5.8 5.8 0 0 1 8 0"></path>
+              <circle class="fill" cx="12" cy="18.6" r="1.35"></circle>
+            </svg>
+          </span>
+          <span class="app-label">Internet-WLAN</span>
+        </button>
+        <button class="app-tile" type="button" data-open-section="enrollSection">
+          <span class="app-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="10" r="5"></circle>
+              <path d="M4 21a8 8 0 0 1 16 0"></path>
+              <path d="M9.5 10h.01"></path>
+              <path d="M14.5 10h.01"></path>
+              <path d="M10 13c1.2.7 2.8.7 4 0"></path>
+            </svg>
+          </span>
+          <span class="app-label">Gesicht anlernen</span>
+        </button>
+        <button class="app-tile" type="button" data-open-section="peopleSection">
+          <span class="app-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M8 6h12"></path>
+              <path d="M8 12h12"></path>
+              <path d="M8 18h12"></path>
+              <circle class="fill" cx="4" cy="6" r="1.4"></circle>
+              <circle class="fill" cx="4" cy="12" r="1.4"></circle>
+              <circle class="fill" cx="4" cy="18" r="1.4"></circle>
+            </svg>
+          </span>
+          <span class="app-label">Personen</span>
+        </button>
+      </nav>
+    </section>
+
+    <section class="grid">
+      <article class="card" id="telegramSection" data-section hidden>
+        <div class="section-header">
+          <h2>Telegram</h2>
+        </div>
+        <p>Token wird lokal auf dem Raspberry Pi gespeichert und in der Oberfläche nur maskiert angezeigt.</p>
+        <form id="configForm">
+          <label>Bot Token
+            <input id="telegramBotToken" name="telegram_bot_token" autocomplete="off" placeholder="123456:ABCDEF...">
+          </label>
+          <label>Chat ID
+            <input id="telegramChatId" name="telegram_chat_id" autocomplete="off" placeholder="123456789">
+          </label>
+          <button type="submit">Telegram speichern</button>
+          <button class="secondary" id="testTelegramButton" type="button">Testnachricht senden</button>
+        </form>
+        <div id="configResult" class="result">Noch keine Aktion ausgeführt.</div>
+      </article>
+
+      <article class="card" id="thresholdSection" data-section hidden>
+        <div class="section-header">
+          <h2>Zulassungsschwelle</h2>
+        </div>
+        <p>Legt fest, ab welcher Face-Similarity ein einzelnes Bild als Match gilt. Höher = strenger, niedriger = toleranter. Standardwert ist 0.60.</p>
+        <form id="thresholdForm">
+          <label>Similarity Threshold
+            <input id="similarityThreshold" name="similarity_threshold" type="number" min="0" max="1" step="0.01" placeholder="0.60">
+          </label>
+          <button type="submit">Schwelle speichern</button>
+        </form>
+        <div id="thresholdResult" class="result">Standardwert 0.60 ist aktiv und in der Config hinterlegt. Nur bei Bedarf anpassen.</div>
+      </article>
+
+      <article class="card" id="systemSection" data-section hidden>
+        <div class="section-header">
+          <h2>Shutdown</h2>
+        </div>
+        <p>Fährt den Raspberry Pi sauber herunter. Danach erst die Stromversorgung trennen, wenn der Pi vollständig aus ist.</p>
+        <button class="danger" id="shutdownButton" type="button">Raspberry Pi sicher herunterfahren</button>
+        <div id="systemResult" class="result">Noch keine Systemaktion ausgeführt.</div>
+      </article>
+
+      <article class="card" id="wifiSection" data-section hidden>
+        <div class="section-header">
+          <h2>Internet-WLAN</h2>
+        </div>
+        <p>Verwaltet nur den USB-WLAN-Adapter <strong>wlan1</strong> für Internetzugang. Der lokale Hotspot auf <strong>wlan0</strong> bleibt unverändert.</p>
+        <div class="toolbar">
+          <button id="wifiRefreshButton" type="button">Status aktualisieren</button>
+          <button class="secondary" id="wifiScanButton" type="button">WLANs suchen</button>
+        </div>
+        <div id="wifiStatus" class="result">Noch kein WLAN-Status geladen.</div>
+        <h3>Gespeicherte WLAN-Profile</h3>
+        <div id="wifiProfiles" class="wifi-list">Noch keine Profile geladen.</div>
+        <h3>Neues WLAN verbinden</h3>
+        <form id="wifiConnectForm">
+          <label>SSID
+            <input id="wifiSsid" name="ssid" required placeholder="Mein WLAN">
+          </label>
+          <label>Passwort
+            <input id="wifiPassword" name="password" type="password" autocomplete="new-password">
+          </label>
+          <label>Profilname optional
+            <input id="wifiProfileName" name="name" placeholder="home-wifi">
+          </label>
+          <button type="submit">Mit WLAN verbinden</button>
+        </form>
+        <h3>Gefundene WLANs</h3>
+        <div id="wifiNetworks" class="wifi-list">Noch kein Scan ausgeführt.</div>
+        <div id="wifiResult" class="result">Noch keine WLAN-Aktion ausgeführt.</div>
+      </article>
+
+      <article class="card" id="enrollSection" data-section hidden>
+        <div class="section-header">
+          <h2>Gesicht anlernen</h2>
+        </div>
+        <p>Wähle, ob du vorhandene Bilder hochladen oder direkt mit der ESP32-CAM realistische Referenzbilder aufnehmen möchtest.</p>
+        <div class="method-tabs">
+          <button id="showEspEnroll" class="active" type="button">ESP-Kamera</button>
+          <button id="showUploadEnroll" type="button">Manueller Upload</button>
+        </div>
+
+        <div id="espEnrollPanel" class="method-panel">
+          <h3>Geführte ESP-Aufnahme</h3>
+          <p>Es werden fest 12 Bilder aufgenommen: bei ca. 0,5 m und ca. 1 m Abstand jeweils 2 frontal, 2 leicht links und 2 leicht rechts. Du klickst jedes Bild einzeln weiter.</p>
+          <p>Vor dem Start muss die Klingel aus dem Deep Sleep geweckt werden, z. B. durch Tastendruck oder Bewegungssensor. Warte danach, bis der ESP mit dem WLAN verbunden ist: Wenn die grüne LED dauerhaft leuchtet, ist er bereit. Nimm am besten zuerst eine Vorschau auf und starte danach die geführte Aufnahme.</p>
+          <div class="guide" id="espGuide">
+            Stelle dich vor die ESP32-CAM. Starte erst, wenn dein Gesicht gut sichtbar ist.
+          </div>
+          <form id="espEnrollForm">
+            <label>Person ID
+              <input id="espPersonId" name="person_id" required placeholder="jonathan">
+            </label>
+            <button type="submit">Geführte Aufnahme starten</button>
+            <button class="danger" id="espDiscardSessionButton" type="button" hidden>Session verwerfen</button>
+            <button class="secondary" id="espPreviewButton" type="button">Vorschau aufnehmen</button>
+          </form>
+          <img id="espPreview" class="preview" alt="ESP-Kamera-Vorschau">
+          <div id="espEnrollResult" class="result">Noch keine ESP-Aufnahme gestartet.</div>
+        </div>
+
+        <div id="uploadEnrollPanel" class="method-panel" hidden>
+          <h3>Manueller Upload</h3>
+          <p>Lade mehrere Bilder derselben Person hoch. Pro gültigem Bild wird ein Embedding in der bestehenden Datenbank gespeichert.</p>
+          <form id="enrollForm">
+            <label>Person ID
+              <input id="personId" name="person_id" required placeholder="jonathan">
+            </label>
+            <label>Bilder
+              <input id="images" name="images" type="file" accept="image/*" multiple required>
+            </label>
+            <button type="submit">Bilder anlernen</button>
+          </form>
+          <div id="enrollResult" class="result">Noch keine Bilder hochgeladen.</div>
+        </div>
+      </article>
+    </section>
+
+    <section class="card" id="peopleSection" data-section hidden>
+      <div class="section-header">
+        <h2>Gespeicherte Personen</h2>
+      </div>
+      <div id="people" class="people">Lade Personen...</div>
+    </section>
+  </main>
+
+  <script>
+    function escapeHtml(value) {
+      return String(value == null ? "" : value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+    }
+
+    function pill(label, ok) {
+      return `<span class="pill ${ok ? "ok" : "bad"}">${escapeHtml(label)}</span>`;
+    }
+
+    function highlightInstruction(value) {
+      let html = escapeHtml(value);
+      ["0,5 m", "1 m", "frontal", "links", "rechts"].forEach((term) => {
+        html = html.replaceAll(term, `<strong>${term}</strong>`);
+      });
+      return html;
+    }
+
+    const espCaptureGuide = [
+      "Bild 1/12: Abstand ca. 0,5 m, frontal in die Kamera schauen.",
+      "Bild 2/12: Abstand ca. 0,5 m, frontal bleiben, kleine Variation.",
+      "Bild 3/12: Abstand ca. 0,5 m, Kopf leicht nach links drehen.",
+      "Bild 4/12: Abstand ca. 0,5 m, weiter leicht links, kleine Variation.",
+      "Bild 5/12: Abstand ca. 0,5 m, Kopf leicht nach rechts drehen.",
+      "Bild 6/12: Abstand ca. 0,5 m, weiter leicht rechts, kleine Variation.",
+      "Bild 7/12: Abstand ca. 1 m, frontal in die Kamera schauen.",
+      "Bild 8/12: Abstand ca. 1 m, frontal bleiben, kleine Variation.",
+      "Bild 9/12: Abstand ca. 1 m, Kopf leicht nach links drehen.",
+      "Bild 10/12: Abstand ca. 1 m, weiter leicht links, kleine Variation.",
+      "Bild 11/12: Abstand ca. 1 m, Kopf leicht nach rechts drehen.",
+      "Bild 12/12: Abstand ca. 1 m, weiter leicht rechts, kleine Variation.",
+    ];
+    let espEnrollState = {
+      active: false,
+      personId: "",
+      sessionId: "",
+      stepIndex: 0,
+      results: [],
+    };
+
+    function showEnrollmentMethod(method) {
+      const espActive = method === "esp";
+      document.getElementById("espEnrollPanel").hidden = !espActive;
+      document.getElementById("uploadEnrollPanel").hidden = espActive;
+      document.getElementById("showEspEnroll").classList.toggle("active", espActive);
+      document.getElementById("showUploadEnroll").classList.toggle("active", !espActive);
+    }
+
+    function setEspGuide(value) {
+      document.getElementById("espGuide").innerHTML = highlightInstruction(value);
+    }
+
+    async function loadStatus() {
+      const [configResponse, healthResponse, peopleResponse] = await Promise.all([
+        fetch("/api/config"),
+        fetch("/health"),
+        fetch("/api/persons"),
+      ]);
+      const config = await configResponse.json();
+      const health = await healthResponse.json();
+      const people = await peopleResponse.json();
+      const personList = people.people || [];
+      const activePeople = personList.filter((person) => person.active).length;
+
+      document.getElementById("status").innerHTML = [
+        pill("Telegram " + (config.telegram_enabled ? "aktiv" : "fehlt"), config.telegram_enabled),
+        pill("Internet " + (health.network && health.network.internet_ok ? "ok" : "nicht ok"), health.network && health.network.internet_ok),
+        pill("Aktive Personen: " + activePeople, activePeople > 0),
+      ].join("");
+
+      document.getElementById("telegramChatId").value = config.telegram_chat_id || "";
+      document.getElementById("telegramBotToken").placeholder = config.telegram_bot_token_masked || "123456:ABCDEF...";
+      const activeThreshold = config.similarity_threshold == null ? "0.60" : Number(config.similarity_threshold).toFixed(2);
+      document.getElementById("similarityThreshold").value = activeThreshold;
+      setResult("thresholdResult", "Aktive Schwelle: " + activeThreshold + " (Standard 0.60, in der Config hinterlegt). Nur bei Bedarf anpassen.");
+
+      renderPeople(personList);
+    }
+
+    function setResult(id, data) {
+      document.getElementById(id).textContent =
+          typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    }
+
+    function showSetupSection(sectionId) {
+      document.querySelectorAll("[data-section]").forEach((section) => {
+        section.hidden = section.id !== sectionId;
+      });
+      const section = document.getElementById(sectionId);
+      if (section) {
+        section.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
+
+    function renderPeople(personList) {
+      const peopleNode = document.getElementById("people");
+      peopleNode.innerHTML = "";
+      if (personList.length === 0) {
+        peopleNode.textContent = "Noch keine Personen gespeichert.";
+        return;
+      }
+
+      personList.forEach((person) => {
+        const card = document.createElement("div");
+        card.className = "person";
+
+        const title = document.createElement("strong");
+        title.textContent = person.person_id;
+        card.appendChild(title);
+        card.appendChild(document.createElement("br"));
+
+        card.appendChild(document.createTextNode("Status: "));
+        const status = document.createElement("span");
+        status.className = "pill " + (person.active ? "ok" : "bad");
+        status.textContent = person.active ? "aktiv" : "deaktiviert";
+        card.appendChild(status);
+        card.appendChild(document.createElement("br"));
+
+        card.appendChild(document.createTextNode("Referenzbilder: " + person.reference_count));
+        card.appendChild(document.createElement("br"));
+        card.appendChild(document.createTextNode("Aktualisiert: " + (person.updated_at || "n/a")));
+
+        const actions = document.createElement("div");
+        actions.className = "person-actions";
+
+        const toggleButton = document.createElement("button");
+        toggleButton.className = "person-toggle";
+        toggleButton.type = "button";
+        toggleButton.dataset.personId = person.person_id;
+        toggleButton.dataset.active = person.active ? "false" : "true";
+        toggleButton.textContent = person.active ? "Deaktivieren" : "Aktivieren";
+        actions.appendChild(toggleButton);
+
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "person-delete danger";
+        deleteButton.type = "button";
+        deleteButton.dataset.personId = person.person_id;
+        deleteButton.textContent = "Löschen";
+        actions.appendChild(deleteButton);
+
+        card.appendChild(actions);
+        peopleNode.appendChild(card);
+      });
+    }
+
+    function renderWifiStatus(data) {
+      if (!data.ok) {
+        setResult("wifiStatus", data);
+        return;
+      }
+
+      const devices = data.devices || [];
+      const wlan0 = devices.find((device) => device.device === "wlan0");
+      const wlan1 = devices.find((device) => device.device === "wlan1");
+      const eth0 = devices.find((device) => device.device === "eth0");
+      document.getElementById("wifiStatus").innerHTML =
+          `<div class="wifi-summary">` +
+          `<div>${pill("Internet wlan1: " + (wlan1 && wlan1.state === "connected" ? "verbunden" : "nicht verbunden"), wlan1 && wlan1.state === "connected")} ${escapeHtml(wlan1 && wlan1.connection ? wlan1.connection : "")}</div>` +
+          `<div>${pill("Hotspot wlan0: " + (wlan0 && wlan0.state === "connected" ? "aktiv" : "nicht aktiv"), wlan0 && wlan0.state === "connected")} ${escapeHtml(wlan0 && wlan0.connection ? wlan0.connection : "")}</div>` +
+          `<div>${pill("Ethernet eth0: " + (eth0 && eth0.state === "connected" ? "verbunden" : "nicht verbunden"), eth0 && eth0.state === "connected")} ${escapeHtml(eth0 && eth0.connection ? eth0.connection : "")}</div>` +
+          `</div>`;
+
+      const profilesNode = document.getElementById("wifiProfiles");
+      profilesNode.innerHTML = "";
+      const profiles = data.connections || [];
+      if (profiles.length === 0) {
+        profilesNode.textContent = "Keine gespeicherten WLAN-Profile gefunden.";
+        return;
+      }
+
+      profiles.forEach((profile) => {
+        const item = document.createElement("div");
+        item.className = "wifi-item";
+        const isActive = profile.device === "wlan1";
+        const isHotspotProfile = profile.device === "wlan0";
+        item.innerHTML =
+            `<strong>${escapeHtml(profile.name)}</strong><br>` +
+            `Gerät: ${escapeHtml(profile.device || "-")}<br>` +
+            `Autoconnect: ${escapeHtml(profile.autoconnect || "-")}<br>` +
+            `Priorität: ${escapeHtml(profile.priority || "0")}<br>` +
+            `${isActive ? pill("aktuell auf wlan1 aktiv", true) : ""}` +
+            `${isHotspotProfile ? pill("Hotspot-Profil geschützt", true) : ""}`;
+
+        if (!isActive && !isHotspotProfile) {
+          const activateButton = document.createElement("button");
+          activateButton.type = "button";
+          activateButton.textContent = "Auf wlan1 aktivieren";
+          activateButton.addEventListener("click", () => activateWifiProfile(profile.name));
+          item.appendChild(document.createElement("br"));
+          item.appendChild(activateButton);
+        }
+        profilesNode.appendChild(item);
+      });
+    }
+
+    function renderWifiNetworks(data) {
+      const networksNode = document.getElementById("wifiNetworks");
+      networksNode.innerHTML = "";
+      if (!data.ok) {
+        setResult("wifiResult", data);
+        return;
+      }
+
+      const networks = data.networks || [];
+      if (networks.length === 0) {
+        networksNode.textContent = "Keine WLANs gefunden.";
+        return;
+      }
+
+      networks.forEach((network) => {
+        const item = document.createElement("div");
+        item.className = "wifi-item";
+        item.innerHTML =
+            `<strong>${escapeHtml(network.ssid)}</strong><br>` +
+            `Signal: ${escapeHtml(network.signal || "-")} %<br>` +
+            `Sicherheit: ${escapeHtml(network.security || "-")}`;
+
+        const useButton = document.createElement("button");
+        useButton.type = "button";
+        useButton.textContent = "SSID übernehmen";
+        useButton.addEventListener("click", () => {
+          document.getElementById("wifiSsid").value = network.ssid;
+          if (!document.getElementById("wifiProfileName").value) {
+            document.getElementById("wifiProfileName").value = network.ssid;
+          }
+          setResult("wifiResult", "SSID übernommen. Bitte Passwort eingeben und verbinden.");
+        });
+        item.appendChild(document.createElement("br"));
+        item.appendChild(useButton);
+        networksNode.appendChild(item);
+      });
+    }
+
+    async function loadWifiStatus() {
+      try {
+        setResult("wifiStatus", "Lade WLAN-Status...");
+        const response = await fetch("/api/wifi/status");
+        const data = await response.json();
+        renderWifiStatus(data);
+      } catch (error) {
+        setResult("wifiStatus", "Fehler beim Laden des WLAN-Status: " + error);
+      }
+    }
+
+    async function scanWifiNetworks() {
+      try {
+        setResult("wifiResult", "Suche WLANs auf wlan1...");
+        const response = await fetch("/api/wifi/scan", { method: "POST" });
+        const data = await response.json();
+        renderWifiNetworks(data);
+      } catch (error) {
+        setResult("wifiResult", "Fehler beim WLAN-Scan: " + error);
+      }
+    }
+
+    async function activateWifiProfile(profileName) {
+      try {
+        setResult("wifiResult", `Aktiviere Profil ${profileName} auf wlan1...`);
+        const response = await fetch("/api/wifi/activate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: profileName }),
+        });
+        const data = await response.json();
+        setResult("wifiResult", data);
+        await loadWifiStatus();
+      } catch (error) {
+        setResult("wifiResult", "Fehler beim Aktivieren des WLAN-Profils: " + error);
+      }
+    }
+
+    async function setPersonActive(encodedPersonId, active) {
+      try {
+        setResult("enrollResult", active ? "Aktiviere Person..." : "Deaktiviere Person...");
+        const response = await fetch(`/api/persons/${encodedPersonId}/active`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ active }),
+        });
+        const data = await response.json();
+        setResult("enrollResult", data);
+        await loadStatus();
+      } catch (error) {
+        setResult("enrollResult", "Fehler beim Ändern des Personenstatus: " + error);
+      }
+    }
+
+    async function deletePerson(encodedPersonId) {
+      const personId = decodeURIComponent(encodedPersonId);
+      if (!confirm(`Referenzbilder für "${personId}" wirklich löschen? Alte Ereignisse bleiben erhalten.`)) {
+        return;
+      }
+      try {
+        setResult("enrollResult", "Lösche Referenzbilder...");
+        const response = await fetch(`/api/persons/${encodedPersonId}`, { method: "DELETE" });
+        const data = await response.json();
+        setResult("enrollResult", data);
+        await loadStatus();
+      } catch (error) {
+        setResult("enrollResult", "Fehler beim Löschen: " + error);
+      }
+    }
+
+    document.getElementById("people").addEventListener("click", async (event) => {
+      const toggleButton = event.target.classList && event.target.classList.contains("person-toggle")
+          ? event.target
+          : null;
+      if (toggleButton) {
+        const encodedPersonId = encodeURIComponent(toggleButton.dataset.personId);
+        await setPersonActive(encodedPersonId, toggleButton.dataset.active === "true");
+        return;
+      }
+
+      const deleteButton = event.target.classList && event.target.classList.contains("person-delete")
+          ? event.target
+          : null;
+      if (deleteButton) {
+        const encodedPersonId = encodeURIComponent(deleteButton.dataset.personId);
+        await deletePerson(encodedPersonId);
+      }
+    });
+
+    document.querySelectorAll("[data-open-section]").forEach((button) => {
+      button.addEventListener("click", () => showSetupSection(button.dataset.openSection));
+    });
+
+    document.getElementById("showEspEnroll").addEventListener("click", () => {
+      showEnrollmentMethod("esp");
+    });
+
+    document.getElementById("showUploadEnroll").addEventListener("click", () => {
+      showEnrollmentMethod("upload");
+    });
+
+    document.getElementById("configForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        setResult("configResult", "Speichere Telegram-Konfiguration...");
+        const form = new FormData(event.currentTarget);
+        const response = await fetch("/api/config", { method: "POST", body: form });
+        const data = await response.json();
+        setResult("configResult", data);
+        document.getElementById("telegramBotToken").value = "";
+        await loadStatus();
+      } catch (error) {
+        setResult("configResult", "Fehler beim Speichern: " + error);
+      }
+    });
+
+    document.getElementById("thresholdForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        setResult("thresholdResult", "Speichere Zulassungsschwelle...");
+        const form = new FormData(event.currentTarget);
+        const response = await fetch("/api/config", { method: "POST", body: form });
+        const data = await response.json();
+        setResult("thresholdResult", data);
+        await loadStatus();
+      } catch (error) {
+        setResult("thresholdResult", "Fehler beim Speichern der Schwelle: " + error);
+      }
+    });
+
+    document.getElementById("testTelegramButton").addEventListener("click", async () => {
+      try {
+        setResult("configResult", "Sende Telegram-Testnachricht...");
+        const response = await fetch("/api/test-telegram", { method: "POST" });
+        const data = await response.json();
+        setResult("configResult", data);
+        await loadStatus();
+      } catch (error) {
+        setResult("configResult", "Fehler beim Telegram-Test: " + error);
+      }
+    });
+
+    document.getElementById("shutdownButton").addEventListener("click", async () => {
+      if (!confirm("Raspberry Pi wirklich sauber herunterfahren? Danach ist die Setup-Seite nicht mehr erreichbar.")) {
+        return;
+      }
+      if (!confirm("Bitte bestätigen: Nach dem Herunterfahren erst dann den Strom trennen, wenn der Pi aus ist.")) {
+        return;
+      }
+
+      try {
+        setResult("systemResult", "Shutdown wird ausgelöst. Die Verbindung bricht gleich ab...");
+        const response = await fetch("/api/system/shutdown", { method: "POST" });
+        const data = await response.json();
+        setResult("systemResult", data);
+      } catch (error) {
+        setResult("systemResult", "Shutdown wurde angefordert. Falls die Verbindung abbricht, ist das erwartbar: " + error);
+      }
+    });
+
+    document.getElementById("wifiRefreshButton").addEventListener("click", loadWifiStatus);
+    document.getElementById("wifiScanButton").addEventListener("click", scanWifiNetworks);
+
+    document.getElementById("wifiConnectForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        const form = new FormData(event.currentTarget);
+        const ssid = String(form.get("ssid") || "").trim();
+        const password = String(form.get("password") || "");
+        const name = String(form.get("name") || "").trim();
+        if (!ssid) {
+          setResult("wifiResult", "Bitte eine SSID eingeben.");
+          return;
+        }
+        if (!password) {
+          setResult("wifiResult", "Bitte das WLAN-Passwort eingeben.");
+          return;
+        }
+
+        setResult("wifiResult", `Verbinde wlan1 mit ${ssid}...`);
+        const response = await fetch("/api/wifi/connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ssid, password, name }),
+        });
+        const data = await response.json();
+        setResult("wifiResult", data);
+        document.getElementById("wifiPassword").value = "";
+        await loadWifiStatus();
+      } catch (error) {
+        setResult("wifiResult", "Fehler beim Verbinden mit dem WLAN: " + error);
+      }
+    });
+
+    document.getElementById("enrollForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submitButton = event.currentTarget.querySelector("button[type='submit']");
+      try {
+        const personId = document.getElementById("personId").value.trim();
+        const images = Array.from(document.getElementById("images").files || []);
+        if (!personId) {
+          setResult("enrollResult", "Bitte eine Person ID eingeben.");
+          return;
+        }
+        if (!images || images.length === 0) {
+          setResult("enrollResult", "Bitte mindestens ein Bild auswählen.");
+          return;
+        }
+        submitButton.disabled = true;
+        const results = [];
+
+        for (let index = 0; index < images.length; index += 1) {
+          const image = images[index];
+          setResult("enrollResult", `Lade und analysiere Bild ${index + 1}/${images.length}: ${image.name}`);
+          const form = new FormData();
+          form.append("person_id", personId);
+          form.append("note", `setup-upload:${image.name}`);
+          form.append("image", image, image.name);
+
+          try {
+            const response = await fetch("/api/enroll", { method: "POST", body: form });
+            const data = await response.json();
+            results.push({ filename: image.name, status_code: response.status, ...data });
+          } catch (error) {
+            results.push({ filename: image.name, ok: false, error: String(error) });
+          }
+
+          setResult("enrollResult", {
+            ok: results.some((result) => result.ok),
+            person_id: personId,
+            processed_images: index + 1,
+            total_images: images.length,
+            results,
+          });
+        }
+
+        loadStatus().catch((error) => {
+          document.getElementById("status").innerHTML = pill("Status-Refresh fehlgeschlagen: " + error, false);
+        });
+      } catch (error) {
+        setResult("enrollResult", "Fehler beim Anlernen: " + error);
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+
+    document.getElementById("espPreviewButton").addEventListener("click", () => {
+      setResult("espEnrollResult", "Hole ESP-Kamerabild...");
+      const preview = document.getElementById("espPreview");
+      preview.onload = () => setResult("espEnrollResult", "ESP-Kamerabild geladen.");
+      preview.onerror = () => setResult("espEnrollResult", "ESP-Kamerabild konnte nicht geladen werden.");
+      preview.src = "/api/live-snapshot?t=" + Date.now();
+    });
+
+    function resetEspEnrollUi(message) {
+      espEnrollState = {
+        active: false,
+        personId: "",
+        sessionId: "",
+        stepIndex: 0,
+        results: [],
+      };
+      document.getElementById("espDiscardSessionButton").hidden = true;
+      document.querySelector("#espEnrollForm button[type='submit']").textContent = "Geführte Aufnahme starten";
+      if (message) {
+        setEspGuide(message);
+      }
+    }
+
+    async function fetchWithTimeout(url, options, timeoutMs) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await fetch(url, { ...(options || {}), signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Ein "TypeError: Load failed" / "Failed to fetch" oder ein AbortError bedeutet,
+    // dass die Anfrage das Netzwerk nicht erfolgreich abschliessen konnte (Server
+    // kurz nicht erreichbar, Neustart, Timeout). Das ist kein Anwendungsfehler.
+    function isNetworkError(error) {
+      return (
+        (error && error.name === "AbortError") ||
+        error instanceof TypeError
+      );
+    }
+
+    function describeError(error) {
+      if (error && error.name === "AbortError") {
+        return "Zeitüberschreitung – der Server hat nicht rechtzeitig geantwortet.";
+      }
+      if (isNetworkError(error)) {
+        return "Server nicht erreichbar (Verbindung unterbrochen oder Dienst neu gestartet).";
+      }
+      return String(error);
+    }
+
+    async function discardCurrentEspSession(confirmBeforeDiscard) {
+      if (!espEnrollState.sessionId) {
+        return { ok: false, error: "Keine aktive ESP-Anlernsession zum Verwerfen vorhanden." };
+      }
+      if (confirmBeforeDiscard && !confirm("Aktuelle ESP-Anlernsession wirklich verwerfen? Bereits gespeicherte Referenzen dieser Session werden gelöscht.")) {
+        return { ok: false, cancelled: true };
+      }
+
+      try {
+        const response = await fetchWithTimeout("/api/enroll-session/discard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            person_id: espEnrollState.personId,
+            session_id: espEnrollState.sessionId,
+          }),
+        }, 15000);
+        return await response.json();
+      } catch (error) {
+        // Niemals nach aussen werfen: sonst entsteht ein zweites, verwirrendes
+        // "Load failed" im Fehlerobjekt des Anlern-Flows.
+        return { ok: false, unreachable: isNetworkError(error), error: describeError(error) };
+      }
+    }
+
+    document.getElementById("espEnrollForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submitButton = event.currentTarget.querySelector("button[type='submit']");
+      const personId = document.getElementById("espPersonId").value.trim();
+      if (!personId) {
+        setResult("espEnrollResult", "Bitte eine Person ID eingeben.");
+        return;
+      }
+
+      if (!espEnrollState.active || espEnrollState.personId !== personId) {
+        espEnrollState = {
+          active: true,
+          personId,
+          sessionId: "esp-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+          stepIndex: 0,
+          results: [],
+        };
+        setEspGuide("Erster Schritt: " + espCaptureGuide[0] + " Bereite dich in Ruhe vor und klicke dann auf Aufnahme starten.");
+        setResult("espEnrollResult", "Geführte Session vorbereitet. Es wurde noch kein Bild aufgenommen.");
+        submitButton.textContent = "Aufnahme starten";
+        document.getElementById("espDiscardSessionButton").hidden = false;
+        return;
+      }
+
+      if (espEnrollState.stepIndex >= espCaptureGuide.length) {
+        espEnrollState.active = false;
+        submitButton.textContent = "Geführte Aufnahme starten";
+        document.getElementById("espDiscardSessionButton").hidden = true;
+        setEspGuide("Geführte Aufnahme ist bereits abgeschlossen. Starte erneut, wenn du weitere Referenzen aufnehmen möchtest.");
+        return;
+      }
+
+      try {
+        submitButton.disabled = true;
+        const instruction = espCaptureGuide[espEnrollState.stepIndex];
+        setEspGuide(instruction + " Wenn du bereit bist, wird jetzt genau ein Bild aufgenommen.");
+        setResult("espEnrollResult", `Nehme Bild ${espEnrollState.stepIndex + 1}/12 auf...`);
+
+        const form = new FormData();
+        form.append("person_id", espEnrollState.personId);
+        form.append("step", String(espEnrollState.stepIndex + 1));
+        form.append("instruction", instruction);
+        form.append("session_id", espEnrollState.sessionId);
+
+        let response = null;
+        let data = null;
+        let networkError = null;
+        const maxAttempts = 2;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          try {
+            response = await fetchWithTimeout("/api/enroll-from-esp", { method: "POST", body: form }, 60000);
+            data = await response.json();
+            networkError = null;
+            break;
+          } catch (requestError) {
+            networkError = requestError;
+            if (!isNetworkError(requestError) || attempt >= maxAttempts) {
+              break;
+            }
+            setResult("espEnrollResult", "Verbindung unterbrochen – neuer Versuch (" + (attempt + 1) + "/" + maxAttempts + ")...");
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+        }
+
+        if (networkError) {
+          if (!isNetworkError(networkError)) {
+            throw networkError;
+          }
+          // Server war während der Aufnahme nicht erreichbar (z. B. kurzer
+          // Neustart oder Timeout). Session NICHT verwerfen – ein Discard würde
+          // ebenfalls fehlschlagen und bereits gute Referenzen könnten verloren
+          // gehen. Stattdessen Schritt wiederholbar machen.
+          submitButton.textContent = `Bild ${espEnrollState.stepIndex + 1}/12 erneut versuchen`;
+          setEspGuide("Verbindung zum Server war kurz unterbrochen. Die Session bleibt erhalten – klicke erneut, um diesen Schritt ohne Datenverlust zu wiederholen.");
+          setResult("espEnrollResult", {
+            ok: false,
+            error: "ESP-Anlernen fehlgeschlagen: " + describeError(networkError),
+            failed_step: espEnrollState.stepIndex + 1,
+            hinweis: "Verbindung unterbrochen – Schritt kann ohne Datenverlust wiederholt werden.",
+          });
+          return;
+        }
+
+        espEnrollState.results.push({
+          step: espEnrollState.stepIndex + 1,
+          instruction,
+          status_code: response.status,
+          ...data,
+        });
+
+        if (!response.ok || !data.ok) {
+          const failedStep = espEnrollState.stepIndex + 1;
+          const failedResults = espEnrollState.results.slice();
+          const discardResult = await discardCurrentEspSession(false);
+          resetEspEnrollUi("Aufnahme fehlgeschlagen. Die aktuelle Session wurde verworfen, damit keine unvollständigen Referenzen gespeichert bleiben.");
+          setResult("espEnrollResult", {
+            ok: false,
+            error: data.error || "ESP-Aufnahme konnte nicht gespeichert werden.",
+            failed_step: failedStep,
+            discard_result: discardResult,
+            results: failedResults,
+          });
+          loadStatus().catch((error) => {
+            document.getElementById("status").innerHTML = pill("Status-Refresh fehlgeschlagen: " + error, false);
+          });
+          return;
+        }
+
+        if (data.latest_image_url) {
+          document.getElementById("espPreview").src = data.latest_image_url + "?t=" + Date.now();
+        }
+
+        espEnrollState.stepIndex += 1;
+        const complete = espEnrollState.stepIndex >= espCaptureGuide.length;
+        setResult("espEnrollResult", {
+          ok: espEnrollState.results.some((result) => result.ok),
+          person_id: espEnrollState.personId,
+          processed_images: espEnrollState.stepIndex,
+          total_images: espCaptureGuide.length,
+          next_instruction: complete ? null : espCaptureGuide[espEnrollState.stepIndex],
+          results: espEnrollState.results,
+        });
+
+        if (complete) {
+          setEspGuide("Alle 12 Bilder aufgenommen. Du kannst den Ablauf bei Bedarf erneut starten.");
+          submitButton.textContent = "Geführte Aufnahme erneut starten";
+          document.getElementById("espDiscardSessionButton").hidden = false;
+          espEnrollState.active = false;
+        } else {
+          setEspGuide("Nächster Schritt: " + espCaptureGuide[espEnrollState.stepIndex] + " Bereite dich in Ruhe vor und klicke dann erneut.");
+          submitButton.textContent = `Bild ${espEnrollState.stepIndex + 1}/12 aufnehmen`;
+        }
+        loadStatus().catch((error) => {
+          document.getElementById("status").innerHTML = pill("Status-Refresh fehlgeschlagen: " + error, false);
+        });
+      } catch (error) {
+        if (isNetworkError(error)) {
+          // Netzwerkfehler: Session erhalten und Wiederholung ermöglichen,
+          // statt einen weiteren (ebenfalls scheiternden) Discard auszulösen.
+          submitButton.textContent = `Bild ${espEnrollState.stepIndex + 1}/12 erneut versuchen`;
+          setEspGuide("Verbindung zum Server war kurz unterbrochen. Die Session bleibt erhalten – klicke erneut, um diesen Schritt ohne Datenverlust zu wiederholen.");
+          setResult("espEnrollResult", {
+            ok: false,
+            error: "ESP-Anlernen fehlgeschlagen: " + describeError(error),
+            hinweis: "Verbindung unterbrochen – Schritt kann ohne Datenverlust wiederholt werden.",
+          });
+        } else {
+          const discardResult = espEnrollState.sessionId
+            ? await discardCurrentEspSession(false)
+            : null;
+          resetEspEnrollUi("Aufnahmefehler. Die aktuelle Session wurde verworfen, damit keine unvollständigen Referenzen gespeichert bleiben.");
+          setResult("espEnrollResult", {
+            ok: false,
+            error: "Fehler beim ESP-Anlernen: " + describeError(error),
+            discard_result: discardResult,
+          });
+        }
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+
+    document.getElementById("espDiscardSessionButton").addEventListener("click", async () => {
+      try {
+        setResult("espEnrollResult", "Verwerfe ESP-Anlernsession...");
+        const data = await discardCurrentEspSession(true);
+        if (data.cancelled) {
+          setResult("espEnrollResult", "Verwerfen abgebrochen.");
+          return;
+        }
+        setResult("espEnrollResult", data);
+        resetEspEnrollUi("Session verworfen. Du kannst neu starten, wenn dein Gesicht gut sichtbar ist.");
+        await loadStatus();
+      } catch (error) {
+        setResult("espEnrollResult", "Fehler beim Verwerfen der Session: " + error);
+      }
+    });
+
+    loadStatus().catch((error) => {
+      document.getElementById("status").innerHTML = pill("Statusfehler: " + error, false);
+    });
+    loadWifiStatus();
+  </script>
+</body>
+</html>

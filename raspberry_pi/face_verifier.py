@@ -29,6 +29,7 @@ UNKNOWN_PERSON_ID = "unknown"
 DEFAULT_ESP_SNAPSHOT_URL = "http://10.42.0.172/snapshot"
 DEFAULT_REQUIRED_MATCHES_FOR_ACCESS = 2
 SAFE_POWEROFF_HELPER = "/usr/local/sbin/hs-iot-safe-poweroff"
+WIFI_SETUP_HELPER = "/usr/local/sbin/hs-iot-wifi-setup"
 
 DEFAULT_DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="de">
@@ -389,6 +390,12 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
     form button {
       margin: 8px 8px 0 0;
     }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 12px 0;
+    }
     input[type="file"] {
       background: #fff;
     }
@@ -483,6 +490,24 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
       padding: 8px 10px;
       font-size: 14px;
     }
+    .wifi-list {
+      display: grid;
+      gap: 10px;
+      margin: 12px 0;
+    }
+    .wifi-item {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.55);
+      padding: 10px;
+    }
+    .wifi-item button {
+      margin-top: 8px;
+    }
+    .wifi-summary {
+      display: grid;
+      gap: 6px;
+    }
     .preview {
       width: 100%;
       border-radius: 16px;
@@ -515,7 +540,7 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
     <section class="grid">
       <article class="card">
         <h2>Telegram</h2>
-        <p>Token wird lokal auf dem Raspberry Pi gespeichert und in der Oberflaeche nur maskiert angezeigt.</p>
+        <p>Token wird lokal auf dem Raspberry Pi gespeichert und in der Oberfläche nur maskiert angezeigt.</p>
         <form id="configForm">
           <label>Bot Token
             <input id="telegramBotToken" name="telegram_bot_token" autocomplete="off" placeholder="123456:ABCDEF...">
@@ -531,7 +556,7 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
 
       <article class="card">
         <h2>Zulassungsschwelle</h2>
-        <p>Legt fest, ab welcher Face-Similarity ein einzelnes Bild als Match gilt. Hoeher = strenger, niedriger = toleranter. Standardwert ist 0.60.</p>
+        <p>Legt fest, ab welcher Face-Similarity ein einzelnes Bild als Match gilt. Höher = strenger, niedriger = toleranter. Standardwert ist 0.60.</p>
         <form id="thresholdForm">
           <label>Similarity Threshold
             <input id="similarityThreshold" name="similarity_threshold" type="number" min="0" max="1" step="0.01" placeholder="0.60">
@@ -546,6 +571,34 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
         <p>Fährt den Raspberry Pi sauber herunter. Danach erst die Stromversorgung trennen, wenn der Pi vollständig aus ist.</p>
         <button class="danger" id="shutdownButton" type="button">Raspberry Pi sicher herunterfahren</button>
         <div id="systemResult" class="result">Noch keine Systemaktion ausgeführt.</div>
+      </article>
+
+      <article class="card">
+        <h2>Internet-WLAN</h2>
+        <p>Verwaltet nur den USB-WLAN-Adapter <strong>wlan1</strong> für Internetzugang. Der lokale Hotspot auf <strong>wlan0</strong> bleibt unverändert.</p>
+        <div class="toolbar">
+          <button id="wifiRefreshButton" type="button">Status aktualisieren</button>
+          <button class="secondary" id="wifiScanButton" type="button">WLANs suchen</button>
+        </div>
+        <div id="wifiStatus" class="result">Noch kein WLAN-Status geladen.</div>
+        <h3>Gespeicherte WLAN-Profile</h3>
+        <div id="wifiProfiles" class="wifi-list">Noch keine Profile geladen.</div>
+        <h3>Neues WLAN verbinden</h3>
+        <form id="wifiConnectForm">
+          <label>SSID
+            <input id="wifiSsid" name="ssid" required placeholder="Mein WLAN">
+          </label>
+          <label>Passwort
+            <input id="wifiPassword" name="password" type="password" autocomplete="new-password">
+          </label>
+          <label>Profilname optional
+            <input id="wifiProfileName" name="name" placeholder="home-wifi">
+          </label>
+          <button type="submit">Mit WLAN verbinden</button>
+        </form>
+        <h3>Gefundene WLANs</h3>
+        <div id="wifiNetworks" class="wifi-list">Noch kein Scan ausgeführt.</div>
+        <div id="wifiResult" class="result">Noch keine WLAN-Aktion ausgeführt.</div>
       </article>
 
       <article class="card">
@@ -736,6 +789,132 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
       });
     }
 
+    function renderWifiStatus(data) {
+      if (!data.ok) {
+        setResult("wifiStatus", data);
+        return;
+      }
+
+      const devices = data.devices || [];
+      const wlan0 = devices.find((device) => device.device === "wlan0");
+      const wlan1 = devices.find((device) => device.device === "wlan1");
+      const eth0 = devices.find((device) => device.device === "eth0");
+      document.getElementById("wifiStatus").innerHTML =
+          `<div class="wifi-summary">` +
+          `<div>${pill("Internet wlan1: " + (wlan1 && wlan1.state === "connected" ? "verbunden" : "nicht verbunden"), wlan1 && wlan1.state === "connected")} ${escapeHtml(wlan1 && wlan1.connection ? wlan1.connection : "")}</div>` +
+          `<div>${pill("Hotspot wlan0: " + (wlan0 && wlan0.state === "connected" ? "aktiv" : "nicht aktiv"), wlan0 && wlan0.state === "connected")} ${escapeHtml(wlan0 && wlan0.connection ? wlan0.connection : "")}</div>` +
+          `<div>${pill("Ethernet eth0: " + (eth0 && eth0.state === "connected" ? "verbunden" : "nicht verbunden"), eth0 && eth0.state === "connected")} ${escapeHtml(eth0 && eth0.connection ? eth0.connection : "")}</div>` +
+          `</div>`;
+
+      const profilesNode = document.getElementById("wifiProfiles");
+      profilesNode.innerHTML = "";
+      const profiles = data.connections || [];
+      if (profiles.length === 0) {
+        profilesNode.textContent = "Keine gespeicherten WLAN-Profile gefunden.";
+        return;
+      }
+
+      profiles.forEach((profile) => {
+        const item = document.createElement("div");
+        item.className = "wifi-item";
+        const isActive = profile.device === "wlan1";
+        const isHotspotProfile = profile.device === "wlan0";
+        item.innerHTML =
+            `<strong>${escapeHtml(profile.name)}</strong><br>` +
+            `Gerät: ${escapeHtml(profile.device || "-")}<br>` +
+            `Autoconnect: ${escapeHtml(profile.autoconnect || "-")}<br>` +
+            `Priorität: ${escapeHtml(profile.priority || "0")}<br>` +
+            `${isActive ? pill("aktuell auf wlan1 aktiv", true) : ""}` +
+            `${isHotspotProfile ? pill("Hotspot-Profil geschützt", true) : ""}`;
+
+        if (!isActive && !isHotspotProfile) {
+          const activateButton = document.createElement("button");
+          activateButton.type = "button";
+          activateButton.textContent = "Auf wlan1 aktivieren";
+          activateButton.addEventListener("click", () => activateWifiProfile(profile.name));
+          item.appendChild(document.createElement("br"));
+          item.appendChild(activateButton);
+        }
+        profilesNode.appendChild(item);
+      });
+    }
+
+    function renderWifiNetworks(data) {
+      const networksNode = document.getElementById("wifiNetworks");
+      networksNode.innerHTML = "";
+      if (!data.ok) {
+        setResult("wifiResult", data);
+        return;
+      }
+
+      const networks = data.networks || [];
+      if (networks.length === 0) {
+        networksNode.textContent = "Keine WLANs gefunden.";
+        return;
+      }
+
+      networks.forEach((network) => {
+        const item = document.createElement("div");
+        item.className = "wifi-item";
+        item.innerHTML =
+            `<strong>${escapeHtml(network.ssid)}</strong><br>` +
+            `Signal: ${escapeHtml(network.signal || "-")} %<br>` +
+            `Sicherheit: ${escapeHtml(network.security || "-")}`;
+
+        const useButton = document.createElement("button");
+        useButton.type = "button";
+        useButton.textContent = "SSID übernehmen";
+        useButton.addEventListener("click", () => {
+          document.getElementById("wifiSsid").value = network.ssid;
+          if (!document.getElementById("wifiProfileName").value) {
+            document.getElementById("wifiProfileName").value = network.ssid;
+          }
+          setResult("wifiResult", "SSID übernommen. Bitte Passwort eingeben und verbinden.");
+        });
+        item.appendChild(document.createElement("br"));
+        item.appendChild(useButton);
+        networksNode.appendChild(item);
+      });
+    }
+
+    async function loadWifiStatus() {
+      try {
+        setResult("wifiStatus", "Lade WLAN-Status...");
+        const response = await fetch("/api/wifi/status");
+        const data = await response.json();
+        renderWifiStatus(data);
+      } catch (error) {
+        setResult("wifiStatus", "Fehler beim Laden des WLAN-Status: " + error);
+      }
+    }
+
+    async function scanWifiNetworks() {
+      try {
+        setResult("wifiResult", "Suche WLANs auf wlan1...");
+        const response = await fetch("/api/wifi/scan", { method: "POST" });
+        const data = await response.json();
+        renderWifiNetworks(data);
+      } catch (error) {
+        setResult("wifiResult", "Fehler beim WLAN-Scan: " + error);
+      }
+    }
+
+    async function activateWifiProfile(profileName) {
+      try {
+        setResult("wifiResult", `Aktiviere Profil ${profileName} auf wlan1...`);
+        const response = await fetch("/api/wifi/activate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: profileName }),
+        });
+        const data = await response.json();
+        setResult("wifiResult", data);
+        await loadWifiStatus();
+      } catch (error) {
+        setResult("wifiResult", "Fehler beim Aktivieren des WLAN-Profils: " + error);
+      }
+    }
+
     async function setPersonActive(encodedPersonId, active) {
       try {
         setResult("enrollResult", active ? "Aktiviere Person..." : "Deaktiviere Person...");
@@ -851,6 +1030,40 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
         setResult("systemResult", data);
       } catch (error) {
         setResult("systemResult", "Shutdown wurde angefordert. Falls die Verbindung abbricht, ist das erwartbar: " + error);
+      }
+    });
+
+    document.getElementById("wifiRefreshButton").addEventListener("click", loadWifiStatus);
+    document.getElementById("wifiScanButton").addEventListener("click", scanWifiNetworks);
+
+    document.getElementById("wifiConnectForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        const form = new FormData(event.currentTarget);
+        const ssid = String(form.get("ssid") || "").trim();
+        const password = String(form.get("password") || "");
+        const name = String(form.get("name") || "").trim();
+        if (!ssid) {
+          setResult("wifiResult", "Bitte eine SSID eingeben.");
+          return;
+        }
+        if (!password) {
+          setResult("wifiResult", "Bitte das WLAN-Passwort eingeben.");
+          return;
+        }
+
+        setResult("wifiResult", `Verbinde wlan1 mit ${ssid}...`);
+        const response = await fetch("/api/wifi/connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ssid, password, name }),
+        });
+        const data = await response.json();
+        setResult("wifiResult", data);
+        document.getElementById("wifiPassword").value = "";
+        await loadWifiStatus();
+      } catch (error) {
+        setResult("wifiResult", "Fehler beim Verbinden mit dem WLAN: " + error);
       }
     });
 
@@ -1165,6 +1378,7 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
     loadStatus().catch((error) => {
       document.getElementById("status").innerHTML = pill("Statusfehler: " + error, false);
     });
+    loadWifiStatus();
   </script>
 </body>
 </html>
@@ -2333,6 +2547,54 @@ class FaceVerifierService:
 
     return {"ok": True, "message": "Shutdown wurde angefordert."}
 
+  def wifi_setup(self, command: str, **kwargs) -> dict:
+    helper_path = Path(WIFI_SETUP_HELPER)
+    if not helper_path.exists():
+      return {
+          "ok": False,
+          "error": (
+              f"WLAN-Helper fehlt: {WIFI_SETUP_HELPER}. "
+              "Bitte install_autostart.sh auf dem Pi erneut ausführen."
+          ),
+      }
+
+    args = ["sudo", "-n", WIFI_SETUP_HELPER, command]
+    if command == "connect":
+      args.extend(["--ssid", str(kwargs.get("ssid") or "")])
+      args.extend(["--password", str(kwargs.get("password") or "")])
+      if kwargs.get("name"):
+        args.extend(["--name", str(kwargs["name"])])
+    elif command == "activate":
+      args.extend(["--name", str(kwargs.get("name") or "")])
+    elif command == "priority":
+      args.extend(["--name", str(kwargs.get("name") or "")])
+      args.extend(["--value", str(kwargs.get("value") or "")])
+    elif command not in {"status", "scan"}:
+      return {"ok": False, "error": "Unbekannter WLAN-Befehl."}
+
+    try:
+      result = subprocess.run(
+          args,
+          check=False,
+          capture_output=True,
+          text=True,
+          timeout=55,
+      )
+    except Exception as exc:
+      return {"ok": False, "error": str(exc)}
+
+    output = (result.stdout or "").strip()
+    try:
+      payload = json.loads(output) if output else {}
+    except json.JSONDecodeError:
+      payload = {"ok": False, "error": output or result.stderr or "WLAN-Helper lieferte kein JSON."}
+
+    if result.returncode != 0 and payload.get("ok", False):
+      payload["ok"] = False
+    if result.returncode != 0 and "error" not in payload:
+      payload["error"] = (result.stderr or output or "WLAN-Helper fehlgeschlagen.").strip()
+    return payload
+
   def _sync_telegram_updates(self) -> None:
     if not self.telegram_enabled:
       return
@@ -2679,6 +2941,39 @@ def create_app(service: FaceVerifierService) -> Flask:
   def system_shutdown():
     payload = service.request_safe_shutdown()
     return jsonify(payload), (200 if payload.get("ok") else 500)
+
+  @app.get("/api/wifi/status")
+  def wifi_status():
+    payload = service.wifi_setup("status")
+    return jsonify(payload), (200 if payload.get("ok") else 500)
+
+  @app.post("/api/wifi/scan")
+  def wifi_scan():
+    payload = service.wifi_setup("scan")
+    return jsonify(payload), (200 if payload.get("ok") else 500)
+
+  @app.post("/api/wifi/connect")
+  def wifi_connect():
+    payload = request.get_json(silent=True) or request.form
+    result = service.wifi_setup(
+        "connect",
+        ssid=payload.get("ssid"),
+        password=payload.get("password"),
+        name=payload.get("name"),
+    )
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+  @app.post("/api/wifi/activate")
+  def wifi_activate():
+    payload = request.get_json(silent=True) or request.form
+    result = service.wifi_setup("activate", name=payload.get("name"))
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+  @app.post("/api/wifi/priority")
+  def wifi_priority():
+    payload = request.get_json(silent=True) or request.form
+    result = service.wifi_setup("priority", name=payload.get("name"), value=payload.get("priority"))
+    return jsonify(result), (200 if result.get("ok") else 400)
 
   @app.get("/api/dashboard")
   def dashboard_data():

@@ -13,7 +13,7 @@ Der Prototyp bildet aktuell diesen Ablauf ab:
 5. Der Raspberry Pi führt für jedes Bild die Gesichtverifikation aus, speichert Snapshots und loggt das Gesamtereignis.
 6. Optional sendet der Raspberry Pi ein Telegram-Foto mit Status und Buttons zum Freigeben oder Ablehnen.
 7. Die externe LED blinkt nach der Verifikation langsam bei Zulassung und schnell bei Ablehnung.
-8. Bei einer Telegram-Entscheidung zeigt das OLED die Rueckmeldung an und der ESP blinkt das Ergebnis erneut.
+8. Bei einer Telegram-Entscheidung zeigt das OLED die Rückmeldung an und der ESP blinkt das Ergebnis erneut.
 9. Nach einer abgeschlossenen Klingelsession geht der ESP in Deep Sleep und wacht bei Bewegung am HC-SR501 wieder auf.
 10. Das Pi-Dashboard zeigt:
    - Livebild vom ESP (nur auf Knopfdruck über Dashboard)
@@ -25,7 +25,7 @@ Der Prototyp bildet aktuell diesen Ablauf ab:
 
 ### Raspberry Pi
 
-- hostet die Hauptoberflaeche
+- hostet die Hauptoberfläche
 - führt die InsightFace-Verifikation aus
 - speichert Logs und Burst-Snapshots
 - bietet Dashboard und APIs an
@@ -37,13 +37,13 @@ Der Prototyp bildet aktuell diesen Ablauf ab:
 - führt den Ring-/Burst-Workflow aus
 - liefert nur noch eine kleine Geräte-API
 
-Die HTML-Hauptoberflaeche liegt **nicht mehr auf dem ESP**, sondern auf dem Pi.
+Die HTML-Hauptoberfläche liegt **nicht mehr auf dem ESP**, sondern auf dem Pi.
 
 ## Projektstruktur
 
 - [src/main.cpp](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/src/main.cpp): ESP32-CAM-Firmware
 - [raspberry_pi/face_verifier.py](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/raspberry_pi/face_verifier.py): Flask-App, Verifikation, Dashboard, Logging
-- [raspberry_pi/requirements.txt](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/raspberry_pi/requirements.txt): Python-Abhaengigkeiten
+- [raspberry_pi/requirements.txt](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/raspberry_pi/requirements.txt): Python-Abhängigkeiten
 
 ## Raspberry Pi einrichten
 
@@ -66,11 +66,11 @@ source .venv/bin/activate
 python face_verifier.py serve --host 0.0.0.0 --port 8000
 ```
 
-Beim ersten Start laedt InsightFace automatisch das Modell `buffalo_sc` herunter. Der Prototyp nutzt nur `CPUExecutionProvider`.
+Beim ersten Start lädt InsightFace automatisch das Modell `buffalo_sc` herunter. Der Prototyp nutzt nur `CPUExecutionProvider`.
 
 ### Setup-/Admin-Seite
 
-Die veraenderliche Nutzerkonfiguration wird lokal auf dem Pi verwaltet:
+Die veränderliche Nutzerkonfiguration wird lokal auf dem Pi verwaltet:
 
 ```text
 http://PI_IP:8000/setup
@@ -78,17 +78,18 @@ http://PI_IP:8000/setup
 
 Die Setup-Seite bleibt auch nach der Ersteinrichtung als Admin-Seite erreichbar. Dort können aktuell:
 
-- Telegram Bot Token und Chat ID gespeichert oder geaendert werden
+- Telegram Bot Token und Chat ID gespeichert oder geändert werden
 - die Zulassungsschwelle für Face-Matches angepasst werden
+- der Internetzugang über den USB-WLAN-Adapter `wlan1` geprüft und verbunden werden
 - eine Telegram-Testnachricht gesendet werden
 - vorhandene Personen angezeigt werden
 - neue Personen oder weitere Referenzbilder angelernt werden
-- Personen temporaer deaktiviert oder wieder aktiviert werden
+- Personen temporär deaktiviert oder wieder aktiviert werden
 - Personen-Referenzbilder gelöscht werden, ohne alte Klingelereignisse zu löschen
 
 Die echten Telegram-Daten werden in `raspberry_pi/config.json` gespeichert. Diese Datei ist in `.gitignore` eingetragen und sollte nicht ins Repository committed werden. Als Vorlage gibt es `raspberry_pi/config.example.json`.
 
-Environment-Variablen bleiben als Fallback moeglich:
+Environment-Variablen bleiben als Fallback möglich:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="123456:ABCDEF..."
@@ -130,7 +131,7 @@ curl -X POST http://PI_IP:8000/api/enroll \
 
 ## ESP32-CAM konfigurieren
 
-In [src/main.cpp](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/src/main.cpp:1) muessen diese Konstanten zu deinem Netz passen:
+In [src/main.cpp](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/src/main.cpp:1) müssen diese Konstanten zu deinem Netz passen:
 
 - `kWifiSsid`
 - `kWifiPassword`
@@ -138,7 +139,7 @@ In [src/main.cpp](/Users/jonathanstuetz/Documents/PlatformIO/Projects/hs_IOT/src
 - `kRingCaptureBaseUrl`
 - `kRingDecisionBaseUrl`
 
-Aktuell nimmt der ESP an, dass der Pi unter `10.42.0.1:8000` laeuft.
+Aktuell nimmt der ESP an, dass der Pi unter `10.42.0.1:8000` läuft.
 
 ### Aktuelle ESP-Logik
 
@@ -151,7 +152,7 @@ Aktuell nimmt der ESP an, dass der Pi unter `10.42.0.1:8000` laeuft.
 - während der WLAN-Verbindung blinkt die grüne LED gedimmt als Start-/Verbindungsfeedback; nach erfolgreicher WLAN-Verbindung leuchtet sie dauerhaft
 - nach Tastendruck wird auf dem Joy-IT SBC-OLED01 / SSD1306-OLED mit Adresse `0x3C` über `Adafruit_SSD1306` testweise `Herzlich Willkommen` angezeigt
 - nach Boot wartet der ESP auf einen Tastendruck oder einen manuellen API-Aufruf
-- waehrend der Verifikation leuchtet Gruen gedimmt; nach der Verifikation blinkt Gruen langsam bei Zulassung und schnell bei Ablehnung
+- während der Verifikation leuchtet Grün gedimmt; nach der Verifikation blinkt Grün langsam bei Zulassung und schnell bei Ablehnung
 - nach einer abgeschlossenen Klingelsession wird Deep Sleep aktiviert, sobald HC-SR501-OUT und Taster wieder `LOW` sind
 - wenn der ESP aufwacht, aber 90 Sekunden lang kein Klingelereignis und keine Geräte-API-Aktivität erfolgt, geht er ebenfalls wieder in Deep Sleep
 - das OLED zeigt während der Prüfung und nach der Verifikation Statusmeldungen zu Gesichtserkennung und Zutrittsentscheidung
@@ -164,7 +165,7 @@ Aktuell nimmt der ESP an, dass der Pi unter `10.42.0.1:8000` laeuft.
 
 ## Dashboard auf dem Pi
 
-Die Hauptoberflaeche ist:
+Die Hauptoberfläche ist:
 
 ```text
 http://PI_IP:8000/
@@ -196,6 +197,10 @@ Das Livebild aktualisiert sich **nur auf Knopfdruck**.
 - `POST /api/verify` -> einzelnes Bild verifizieren
 - `POST /api/ring-capture` -> einzelnes Burst-Bild innerhalb eines Klingelereignisses
 - `POST /api/esp-log` -> ESP-Logzeilen empfangen und im Pi-Terminal ausgeben
+- `GET /api/wifi/status` -> WLAN-Geräte und gespeicherte Profile anzeigen
+- `POST /api/wifi/scan` -> WLANs über `wlan1` suchen
+- `POST /api/wifi/connect` -> neues WLAN-Profil für `wlan1` verbinden
+- `POST /api/wifi/activate` -> gespeichertes WLAN-Profil auf `wlan1` aktivieren
 - `GET /api/ring-decision?event_id=<id>` -> aktuelle Telegram-Entscheidung für ein Klingelereignis
 - `GET /captures/<datei>` -> gespeicherte Burst-Bilder
 
@@ -205,11 +210,11 @@ Das Livebild aktualisiert sich **nur auf Knopfdruck**.
 - `GET /status` -> Status-JSON
 - `GET /snapshot` -> aktuelles JPEG
 - `POST /verify` -> Debug-Verify eines Einzelbilds
-- `POST /ring` -> Ring-Workflow manuell ausloesen
+- `POST /ring` -> Ring-Workflow manuell auslösen
 
 ## Logging und Datenhaltung
 
-Die Datenbank liegt standardmaessig unter:
+Die Datenbank liegt standardmäßig unter:
 
 ```text
 raspberry_pi/face_verification.db
@@ -222,7 +227,7 @@ Aktuell verwendete Tabellen:
 - `ring_events`
 - `ring_captures`
 
-Zusatzlich werden Burst-Bilder gespeichert unter:
+Zusätzlich werden Burst-Bilder gespeichert unter:
 
 ```text
 raspberry_pi/captures/
@@ -316,6 +321,21 @@ Das Autostart-Skript installiert zusätzlich einen eng begrenzten Shutdown-Helpe
 
 Nur dieser feste Helper darf vom Pi-Benutzer ohne Passwort per `sudo` ausgeführt werden. Dadurch funktioniert der Button `Raspberry Pi sicher herunterfahren` auf `/setup`, ohne der Web-App allgemeine Root-Rechte zu geben.
 
+Außerdem installiert das Autostart-Skript einen begrenzten WLAN-Helper:
+
+```text
+/usr/local/sbin/hs-iot-wifi-setup
+```
+
+Die Setup-Seite nutzt diesen Helper für das Fenster `Internet-WLAN`. Verwaltet wird ausschließlich der Internetadapter `wlan1`; der lokale Hotspot auf `wlan0` wird angezeigt, aber nicht verändert. Dadurch können gespeicherte Profile wie Zuhause oder Hochschule angezeigt, gesucht und bei Bedarf auf `wlan1` aktiviert werden, ohne den lokalen Setup-Hotspot zu überschreiben.
+
+Nach einem Code-Deploy auf den Pi sollte das Install-Skript einmal erneut ausgeführt werden, damit Service-Datei, Shutdown-Helper, WLAN-Helper und sudoers-Regeln auf dem Pi aktuell sind:
+
+```bash
+cd /home/pi4/iot_project
+./install_autostart.sh
+```
+
 ### ESP-Code deployen
 
 - Firmware in PlatformIO bauen
@@ -328,9 +348,9 @@ PlatformIO installiert die ESP-Abhängigkeiten aus `lib_deps` automatisch beim B
 
 - Der Standard-Schwellwert für Cosine Similarity ist `0.60`.
 - Die Schwellwert-Konfiguration kann über `/setup` in `raspberry_pi/config.json` gespeichert werden.
-- Das Livebild im Pi-Dashboard nutzt aktuell eine fest hinterlegte ESP-IP (`DEFAULT_ESP_SNAPSHOT_URL`). Wenn sich die ESP-IP aendert, muss diese Konstante angepasst werden.
-- `GPIO15`, `GPIO12` und `GPIO2` sind Boot-Strapping-Pins. Externe Beschaltungen duerfen diese Pins beim Einschalten nicht hart auf `GND` oder `3.3V` ziehen.
+- Das Livebild im Pi-Dashboard nutzt aktuell eine fest hinterlegte ESP-IP (`DEFAULT_ESP_SNAPSHOT_URL`). Wenn sich die ESP-IP ändert, muss diese Konstante angepasst werden.
+- `GPIO15`, `GPIO12` und `GPIO2` sind Boot-Strapping-Pins. Externe Beschaltungen dürfen diese Pins beim Einschalten nicht hart auf `GND` oder `3.3V` ziehen.
 - `GPIO15` und `GPIO12` sind RTC-GPIOs und wecken den ESP32 per Deep-Sleep-Wakeup, wenn der HC-SR501 `OUT` oder der Taster `HIGH` wird.
 - Für den Taster-Wakeup muss der Taster `GPIO12` auf `3.3V` ziehen; ein externer Pulldown, z. B. `100k` nach `GND`, hält den Pin im Ruhezustand `LOW`.
-- `GPIO12` ist ebenfalls ein Boot-Strapping-Pin. Der Taster darf beim Einschalten nicht gedrueckt sein.
-- `GPIO16` wird beim ESP32-CAM mit PSRAM nicht als Taster-Pin genutzt, weil er die Kamera-/PSRAM-Initialisierung stoeren kann.
+- `GPIO12` ist ebenfalls ein Boot-Strapping-Pin. Der Taster darf beim Einschalten nicht gedrückt sein.
+- `GPIO16` wird beim ESP32-CAM mit PSRAM nicht als Taster-Pin genutzt, weil er die Kamera-/PSRAM-Initialisierung stören kann.

@@ -2,7 +2,9 @@
 set -euo pipefail
 
 SERVICE_NAME="${1:-hs-iot-doorbell}"
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Dieses Script liegt unter <projekt>/deploy/, daher zeigt PROJECT_DIR auf das
+# Elternverzeichnis (dort liegen run_doorbell.py und das Paket doorbell/).
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 POWEROFF_HELPER="/usr/local/sbin/hs-iot-safe-poweroff"
 WIFI_HELPER="/usr/local/sbin/hs-iot-wifi-setup"
@@ -11,8 +13,8 @@ WIFI_SUDOERS_FILE="/etc/sudoers.d/hs-iot-wifi-setup"
 RUN_USER="$(id -un)"
 RUN_GROUP="$(id -gn)"
 
-if [[ ! -f "${PROJECT_DIR}/face_verifier.py" ]]; then
-  echo "face_verifier.py wurde in ${PROJECT_DIR} nicht gefunden." >&2
+if [[ ! -f "${PROJECT_DIR}/run_doorbell.py" ]]; then
+  echo "run_doorbell.py wurde in ${PROJECT_DIR} nicht gefunden." >&2
   exit 1
 fi
 
@@ -34,7 +36,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${PROJECT_DIR}
-ExecStart=${PYTHON_BIN} ${PROJECT_DIR}/face_verifier.py serve --host 0.0.0.0 --port 8000
+ExecStart=${PYTHON_BIN} ${PROJECT_DIR}/run_doorbell.py serve --host 0.0.0.0 --port 8000
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=5

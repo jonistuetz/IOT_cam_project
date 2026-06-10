@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/pi4/iot_project
-ExecStart=/home/pi4/iot_project/.venv/bin/python /home/pi4/iot_project/face_verifier.py serve --host 0.0.0.0 --port 8000
+ExecStart=/home/pi4/iot_project/.venv/bin/python /home/pi4/iot_project/run_doorbell.py serve --host 0.0.0.0 --port 8000
 Restart=on-failure
 RestartSec=5
 User=pi4

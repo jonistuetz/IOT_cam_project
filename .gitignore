@@ -11,6 +11,7 @@ raspberry_pi/*.sqlite
 raspberry_pi/*.sqlite3
 raspberry_pi/captures/
 raspberry_pi/__pycache__/
+raspberry_pi/**/__pycache__/
 raspberry_pi/.venv/
 
 # Local ESP secrets

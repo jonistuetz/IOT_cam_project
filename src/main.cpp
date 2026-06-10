@@ -8,11 +8,21 @@
 #include <esp_camera.h>
 #include <esp_sleep.h>
 
+// WLAN-Zugangsdaten werden aus einer lokalen, nicht versionierten Datei geladen
+// (Vorlage: include/secrets.example.h). Fehlt secrets.h, bricht der Build bewusst
+// ab, statt dass fehlende Zugangsdaten erst zur Laufzeit auf dem ESP auffallen.
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#error "secrets.h fehlt. Kopiere include/secrets.example.h zu include/secrets.h und trage die WLAN-Zugangsdaten ein."
+#endif
+
 namespace {
 
-// WLAN-Zugangsdaten und Ziel-URL des Raspberry-Pi-Verifikationsdiensts.
-const char kWifiSsid[] = "hs-iot";
-const char kWifiPassword[] = "hsiot2026";
+// Ziel-URLs des Raspberry-Pi-Verifikationsdiensts. Die WLAN-Zugangsdaten kommen
+// aus secrets.h (WIFI_SSID / WIFI_PASSWORD) und stehen nicht mehr im Quellcode.
+const char kWifiSsid[] = WIFI_SSID;
+const char kWifiPassword[] = WIFI_PASSWORD;
 const char kVerifierUrl[] = "http://10.42.0.1:8000/api/verify";
 const char kRingCaptureBaseUrl[] = "http://10.42.0.1:8000/api/ring-capture";
 const char kLogUrl[] = "http://10.42.0.1:8000/api/esp-log";

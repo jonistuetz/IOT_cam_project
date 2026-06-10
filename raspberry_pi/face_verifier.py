@@ -3,6 +3,7 @@ import json
 import os
 import socket
 import sqlite3
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ DEFAULT_DET_SIZE = (640, 640)
 UNKNOWN_PERSON_ID = "unknown"
 DEFAULT_ESP_SNAPSHOT_URL = "http://10.42.0.172/snapshot"
 DEFAULT_REQUIRED_MATCHES_FOR_ACCESS = 2
+SAFE_POWEROFF_HELPER = "/usr/local/sbin/hs-iot-safe-poweroff"
 
 DEFAULT_DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="de">
@@ -536,7 +538,14 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
           </label>
           <button type="submit">Schwelle speichern</button>
         </form>
-        <div id="thresholdResult" class="result">Noch keine Schwelle gespeichert.</div>
+        <div id="thresholdResult" class="result">Standardwert 0.60 ist aktiv und in der Config hinterlegt. Nur bei Bedarf anpassen.</div>
+      </article>
+
+      <article class="card">
+        <h2>System</h2>
+        <p>Fährt den Raspberry Pi sauber herunter. Danach erst die Stromversorgung trennen, wenn der Pi vollständig aus ist.</p>
+        <button class="danger" id="shutdownButton" type="button">Raspberry Pi sicher herunterfahren</button>
+        <div id="systemResult" class="result">Noch keine Systemaktion ausgeführt.</div>
       </article>
 
       <article class="card">
@@ -664,7 +673,9 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
 
       document.getElementById("telegramChatId").value = config.telegram_chat_id || "";
       document.getElementById("telegramBotToken").placeholder = config.telegram_bot_token_masked || "123456:ABCDEF...";
-      document.getElementById("similarityThreshold").value = config.similarity_threshold == null ? "" : Number(config.similarity_threshold).toFixed(2);
+      const activeThreshold = config.similarity_threshold == null ? "0.60" : Number(config.similarity_threshold).toFixed(2);
+      document.getElementById("similarityThreshold").value = activeThreshold;
+      setResult("thresholdResult", "Aktive Schwelle: " + activeThreshold + " (Standard 0.60, in der Config hinterlegt). Nur bei Bedarf anpassen.");
 
       renderPeople(personList);
     }
@@ -825,6 +836,24 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
       }
     });
 
+    document.getElementById("shutdownButton").addEventListener("click", async () => {
+      if (!confirm("Raspberry Pi wirklich sauber herunterfahren? Danach ist die Setup-Seite nicht mehr erreichbar.")) {
+        return;
+      }
+      if (!confirm("Bitte bestätigen: Nach dem Herunterfahren erst dann den Strom trennen, wenn der Pi aus ist.")) {
+        return;
+      }
+
+      try {
+        setResult("systemResult", "Shutdown wird ausgelöst. Die Verbindung bricht gleich ab...");
+        const response = await fetch("/api/system/shutdown", { method: "POST" });
+        const data = await response.json();
+        setResult("systemResult", data);
+      } catch (error) {
+        setResult("systemResult", "Shutdown wurde angefordert. Falls die Verbindung abbricht, ist das erwartbar: " + error);
+      }
+    });
+
     document.getElementById("enrollForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const submitButton = event.currentTarget.querySelector("button[type='submit']");
@@ -900,6 +929,36 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
       }
     }
 
+    async function fetchWithTimeout(url, options, timeoutMs) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await fetch(url, { ...(options || {}), signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Ein "TypeError: Load failed" / "Failed to fetch" oder ein AbortError bedeutet,
+    // dass die Anfrage das Netzwerk nicht erfolgreich abschliessen konnte (Server
+    // kurz nicht erreichbar, Neustart, Timeout). Das ist kein Anwendungsfehler.
+    function isNetworkError(error) {
+      return (
+        (error && error.name === "AbortError") ||
+        error instanceof TypeError
+      );
+    }
+
+    function describeError(error) {
+      if (error && error.name === "AbortError") {
+        return "Zeitüberschreitung – der Server hat nicht rechtzeitig geantwortet.";
+      }
+      if (isNetworkError(error)) {
+        return "Server nicht erreichbar (Verbindung unterbrochen oder Dienst neu gestartet).";
+      }
+      return String(error);
+    }
+
     async function discardCurrentEspSession(confirmBeforeDiscard) {
       if (!espEnrollState.sessionId) {
         return { ok: false, error: "Keine aktive ESP-Anlernsession zum Verwerfen vorhanden." };
@@ -908,15 +967,21 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
         return { ok: false, cancelled: true };
       }
 
-      const response = await fetch("/api/enroll-session/discard", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          person_id: espEnrollState.personId,
-          session_id: espEnrollState.sessionId,
-        }),
-      });
-      return response.json();
+      try {
+        const response = await fetchWithTimeout("/api/enroll-session/discard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            person_id: espEnrollState.personId,
+            session_id: espEnrollState.sessionId,
+          }),
+        }, 15000);
+        return await response.json();
+      } catch (error) {
+        // Niemals nach aussen werfen: sonst entsteht ein zweites, verwirrendes
+        // "Load failed" im Fehlerobjekt des Anlern-Flows.
+        return { ok: false, unreachable: isNetworkError(error), error: describeError(error) };
+      }
     }
 
     document.getElementById("espEnrollForm").addEventListener("submit", async (event) => {
@@ -963,8 +1028,45 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
         form.append("instruction", instruction);
         form.append("session_id", espEnrollState.sessionId);
 
-        const response = await fetch("/api/enroll-from-esp", { method: "POST", body: form });
-        const data = await response.json();
+        let response = null;
+        let data = null;
+        let networkError = null;
+        const maxAttempts = 2;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          try {
+            response = await fetchWithTimeout("/api/enroll-from-esp", { method: "POST", body: form }, 60000);
+            data = await response.json();
+            networkError = null;
+            break;
+          } catch (requestError) {
+            networkError = requestError;
+            if (!isNetworkError(requestError) || attempt >= maxAttempts) {
+              break;
+            }
+            setResult("espEnrollResult", "Verbindung unterbrochen – neuer Versuch (" + (attempt + 1) + "/" + maxAttempts + ")...");
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+        }
+
+        if (networkError) {
+          if (!isNetworkError(networkError)) {
+            throw networkError;
+          }
+          // Server war während der Aufnahme nicht erreichbar (z. B. kurzer
+          // Neustart oder Timeout). Session NICHT verwerfen – ein Discard würde
+          // ebenfalls fehlschlagen und bereits gute Referenzen könnten verloren
+          // gehen. Stattdessen Schritt wiederholbar machen.
+          submitButton.textContent = `Bild ${espEnrollState.stepIndex + 1}/12 erneut versuchen`;
+          setEspGuide("Verbindung zum Server war kurz unterbrochen. Die Session bleibt erhalten – klicke erneut, um diesen Schritt ohne Datenverlust zu wiederholen.");
+          setResult("espEnrollResult", {
+            ok: false,
+            error: "ESP-Anlernen fehlgeschlagen: " + describeError(networkError),
+            failed_step: espEnrollState.stepIndex + 1,
+            hinweis: "Verbindung unterbrochen – Schritt kann ohne Datenverlust wiederholt werden.",
+          });
+          return;
+        }
+
         espEnrollState.results.push({
           step: espEnrollState.stepIndex + 1,
           instruction,
@@ -1018,20 +1120,27 @@ DEFAULT_SETUP_HTML = """<!DOCTYPE html>
           document.getElementById("status").innerHTML = pill("Status-Refresh fehlgeschlagen: " + error, false);
         });
       } catch (error) {
-        let discardResult = null;
-        if (espEnrollState.sessionId) {
-          try {
-            discardResult = await discardCurrentEspSession(false);
-          } catch (discardError) {
-            discardResult = { ok: false, error: String(discardError) };
-          }
+        if (isNetworkError(error)) {
+          // Netzwerkfehler: Session erhalten und Wiederholung ermöglichen,
+          // statt einen weiteren (ebenfalls scheiternden) Discard auszulösen.
+          submitButton.textContent = `Bild ${espEnrollState.stepIndex + 1}/12 erneut versuchen`;
+          setEspGuide("Verbindung zum Server war kurz unterbrochen. Die Session bleibt erhalten – klicke erneut, um diesen Schritt ohne Datenverlust zu wiederholen.");
+          setResult("espEnrollResult", {
+            ok: false,
+            error: "ESP-Anlernen fehlgeschlagen: " + describeError(error),
+            hinweis: "Verbindung unterbrochen – Schritt kann ohne Datenverlust wiederholt werden.",
+          });
+        } else {
+          const discardResult = espEnrollState.sessionId
+            ? await discardCurrentEspSession(false)
+            : null;
+          resetEspEnrollUi("Aufnahmefehler. Die aktuelle Session wurde verworfen, damit keine unvollständigen Referenzen gespeichert bleiben.");
+          setResult("espEnrollResult", {
+            ok: false,
+            error: "Fehler beim ESP-Anlernen: " + describeError(error),
+            discard_result: discardResult,
+          });
         }
-        resetEspEnrollUi("Aufnahmefehler. Die aktuelle Session wurde verworfen, damit keine unvollständigen Referenzen gespeichert bleiben.");
-        setResult("espEnrollResult", {
-          ok: false,
-          error: "Fehler beim ESP-Anlernen: " + error,
-          discard_result: discardResult,
-        });
       } finally {
         submitButton.disabled = false;
       }
@@ -1101,6 +1210,40 @@ class FaceVerifierService:
     self.similarity_threshold = self.config.similarity_threshold
     self._face_app: Optional[FaceAnalysis] = None
     self.captures_dir.mkdir(parents=True, exist_ok=True)
+    self._ensure_default_threshold_persisted()
+
+  def _ensure_default_threshold_persisted(self) -> None:
+    """Stelle sicher, dass die Config eine Schwelle enthaelt.
+
+    Standardwert ist 0.60. Wird nur geschrieben, wenn noch kein Wert in der
+    Datei steht – ein bereits vom Nutzer gesetzter Wert bleibt unangetastet
+    und wird nur auf ausdruecklichen Wunsch ueber die Oberflaeche geaendert.
+    """
+    existing: dict = {}
+    if self.config_path.exists():
+      try:
+        loaded = json.loads(self.config_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+          existing = loaded
+      except (OSError, json.JSONDecodeError) as exc:
+        self._debug(f"config read for default persist failed: {exc}")
+    if existing.get("similarity_threshold") is not None:
+      return
+    existing["similarity_threshold"] = self.similarity_threshold
+    try:
+      self.config_path.parent.mkdir(parents=True, exist_ok=True)
+      self.config_path.write_text(
+          json.dumps(existing, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+      )
+      try:
+        os.chmod(self.config_path, 0o600)
+      except OSError as exc:
+        self._debug(f"config chmod failed: {exc}")
+      self._debug(
+          f"Standard-Schwelle {self.similarity_threshold:.2f} in Config hinterlegt."
+      )
+    except OSError as exc:
+      self._debug(f"default threshold persist failed: {exc}")
 
   @staticmethod
   def _debug(message: str) -> None:
@@ -2161,6 +2304,35 @@ class FaceVerifierService:
 
     return {"ok": True, "message": "Telegram-Testnachricht wurde gesendet.", "network": network_status}
 
+  def request_safe_shutdown(self) -> dict:
+    helper_path = Path(SAFE_POWEROFF_HELPER)
+    if not helper_path.exists():
+      return {
+          "ok": False,
+          "error": (
+              f"Shutdown-Helper fehlt: {SAFE_POWEROFF_HELPER}. "
+              "Bitte install_autostart.sh auf dem Pi erneut ausführen."
+          ),
+      }
+
+    try:
+      subprocess.Popen(
+          ["sudo", "-n", SAFE_POWEROFF_HELPER],
+          stdout=subprocess.DEVNULL,
+          stderr=subprocess.DEVNULL,
+          start_new_session=True,
+      )
+    except Exception as exc:
+      return {
+          "ok": False,
+          "error": (
+              f"Shutdown konnte nicht gestartet werden: {exc}. "
+              "Bitte prüfen, ob die sudoers-Regel durch install_autostart.sh installiert wurde."
+          ),
+      }
+
+    return {"ok": True, "message": "Shutdown wurde angefordert."}
+
   def _sync_telegram_updates(self) -> None:
     if not self.telegram_enabled:
       return
@@ -2502,6 +2674,11 @@ def create_app(service: FaceVerifierService) -> Flask:
   def test_telegram():
     payload = service.send_telegram_test_message()
     return jsonify(payload), (200 if payload.get("ok") else 400)
+
+  @app.post("/api/system/shutdown")
+  def system_shutdown():
+    payload = service.request_safe_shutdown()
+    return jsonify(payload), (200 if payload.get("ok") else 500)
 
   @app.get("/api/dashboard")
   def dashboard_data():

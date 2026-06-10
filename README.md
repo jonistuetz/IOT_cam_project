@@ -248,19 +248,20 @@ python face_verifier.py serve
 
 ### Autostart per systemd
 
-Eine Beispiel-Service-Datei liegt unter:
-
-```text
-raspberry_pi/hs-iot-doorbell.service
-```
-
-Auf dem Pi kann sie nach dem Deployen z. B. so installiert werden:
+Der Autostart wird auf dem Pi aus dem aktuellen Projektordner installiert. Dadurch ist es egal, ob der Ordner z. B. `/home/pi4/iot_project` oder `/home/pi4/IoT_Project` heißt:
 
 ```bash
-sudo cp /home/pi4/iot_project/hs-iot-doorbell.service /etc/systemd/system/hs-iot-doorbell.service
-sudo systemctl daemon-reload
-sudo systemctl enable hs-iot-doorbell.service
-sudo systemctl start hs-iot-doorbell.service
+cd /home/pi4/IoT_Project
+./install_autostart.sh
+```
+
+Das Skript erkennt automatisch `.venv`, `.iotp` oder `python3`, schreibt `/etc/systemd/system/hs-iot-doorbell.service`, aktiviert den Service und startet ihn direkt.
+
+Danach kann der Dienst so geprüft werden:
+
+```bash
+sudo systemctl status hs-iot-doorbell
+sudo journalctl -u hs-iot-doorbell -f
 ```
 
 Der Service startet nur den Normalbetrieb:
@@ -269,7 +270,51 @@ Der Service startet nur den Normalbetrieb:
 python face_verifier.py serve --host 0.0.0.0 --port 8000
 ```
 
-Requirements, WLAN-/Hotspot-Einrichtung und Datenbank-Backups gehoeren zur einmaligen Vorbereitung und werden nicht bei jedem Boot automatisch veraendert.
+SSH bleibt weiterhin normal möglich. Wenn der Service bereits läuft, darf `python face_verifier.py serve` nicht zusätzlich manuell auf Port `8000` gestartet werden. Für Wartung:
+
+```bash
+sudo systemctl stop hs-iot-doorbell
+sudo systemctl start hs-iot-doorbell
+sudo systemctl restart hs-iot-doorbell
+```
+
+Wenn beim manuellen Start diese Meldung erscheint:
+
+```text
+Address already in use
+Port 8000 is in use by another program.
+```
+
+dann läuft der Autostart-Service bereits. In diesem Fall entweder nur die Logs beobachten:
+
+```bash
+sudo systemctl status hs-iot-doorbell
+sudo journalctl -u hs-iot-doorbell -f
+```
+
+oder den Service vor einem manuellen Start stoppen:
+
+```bash
+sudo systemctl stop hs-iot-doorbell
+source .iotp/bin/activate  # oder .venv, je nach Installation
+python face_verifier.py serve --host 0.0.0.0 --port 8000
+```
+
+Nach dem manuellen Test den Normalbetrieb wieder aktivieren:
+
+```bash
+sudo systemctl start hs-iot-doorbell
+```
+
+Requirements, WLAN-/Hotspot-Einrichtung und Datenbank-Backups gehören zur einmaligen Vorbereitung und werden nicht bei jedem Boot automatisch verändert.
+
+Das Autostart-Skript installiert zusätzlich einen eng begrenzten Shutdown-Helper:
+
+```text
+/usr/local/sbin/hs-iot-safe-poweroff
+```
+
+Nur dieser feste Helper darf vom Pi-Benutzer ohne Passwort per `sudo` ausgeführt werden. Dadurch funktioniert der Button `Raspberry Pi sicher herunterfahren` auf `/setup`, ohne der Web-App allgemeine Root-Rechte zu geben.
 
 ### ESP-Code deployen
 

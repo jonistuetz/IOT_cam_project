@@ -18,6 +18,14 @@ const char kRingCaptureBaseUrl[] = "http://10.42.0.1:8000/api/ring-capture";
 const char kLogUrl[] = "http://10.42.0.1:8000/api/esp-log";
 const char kRingDecisionBaseUrl[] = "http://10.42.0.1:8000/api/ring-decision";
 
+// Feste IP-Konfiguration: spart beim Verbinden den DHCP-Handshake. Die Adresse
+// muss zur Pi-Config passen (esp_snapshot_url -> 10.42.0.172). Gateway/DNS ist
+// der Pi-Hotspot (10.42.0.1).
+const IPAddress kStaticIp(10, 42, 0, 172);
+const IPAddress kGateway(10, 42, 0, 1);
+const IPAddress kSubnet(255, 255, 255, 0);
+const IPAddress kPrimaryDns(10, 42, 0, 1);
+
 // HTTP-Server auf Port 80 für die Geräte-API.
 WebServer server(80);
 
@@ -436,18 +444,18 @@ void displayShowVerificationResult(const String &payload) {
 
 void displayShowRemoteDecision(const String &decision) {
   if (decision == "approve") {
-    displayShowText("Telegram\nfreigegeben", 1);
+    displayShowText("Zulassung durch\nEigentuemer.", 1);
     return;
   }
   if (decision == "deny") {
-    displayShowText("Telegram\nabgelehnt", 1);
+    displayShowText("Ablehnung durch\nEigentuemer.", 1);
     return;
   }
-  displayShowText("Warte auf\nTelegram...", 1);
+  displayShowText("Eigentuemer wird\nbenachrichtigt\nWarte auf Antwort", 1);
 }
 
 void displayShowNoTelegramDecision() {
-  displayShowText("Keine Antwort\nvia Telegram", 1);
+  displayShowText("Keine Antwort\ndurch Eigentuemer\nNochmal klingeln\noder warten.", 1);
 }
 
 void showRemoteDecision(const String &decision) {
@@ -559,9 +567,47 @@ camera_fb_t *captureFrameWithFlash() {
   return frame;
 }
 
+// Ein einzelnes Burst-Bild aufnehmen und die JPEG-Bytes in einen eigenen
+// Puffer kopieren. Notwendig, weil die Kamera mit fb_count = 1 arbeitet und
+// den Framebuffer sofort wieder freigeben muss, bevor das naechste Bild
+// aufgenommen werden kann. So lassen sich mehrere Bilder kurz hintereinander
+// aufnehmen (schnelle, gleichmaessige Blitze) und erst danach versenden.
+struct CapturedImage {
+  uint8_t *data;
+  size_t len;
+};
+
+bool captureFrameToBuffer(CapturedImage *out) {
+  out->data = nullptr;
+  out->len = 0;
+
+  camera_fb_t *frame = captureFrameWithFlash();
+  if (frame == nullptr) {
+    return false;
+  }
+
+  // Bevorzugt ins PSRAM kopieren, sonst Fallback ins interne RAM.
+  uint8_t *copy = static_cast<uint8_t *>(ps_malloc(frame->len));
+  if (copy == nullptr) {
+    copy = static_cast<uint8_t *>(malloc(frame->len));
+  }
+  if (copy == nullptr) {
+    logPrintln("[RING] Kein Speicher fuer Bildpuffer, Bild verworfen.");
+    esp_camera_fb_return(frame);
+    return false;
+  }
+
+  memcpy(copy, frame->buf, frame->len);
+  out->data = copy;
+  out->len = frame->len;
+  esp_camera_fb_return(frame);
+  return true;
+}
+
 String postFrameToPi(
     const String &url,
-    camera_fb_t *frame,
+    const uint8_t *body,
+    size_t bodyLen,
     int *statusCode,
     bool *captureMatched,
     bool *overallMatched,
@@ -581,7 +627,7 @@ String postFrameToPi(
   }
 
   http.addHeader("Content-Type", "image/jpeg");
-  *statusCode = http.POST(frame->buf, frame->len);
+  *statusCode = http.POST(const_cast<uint8_t *>(body), bodyLen);
   logPrintf("[RING] POST abgeschlossen. Status: %d\n", *statusCode);
 
   if (*statusCode > 0) {
@@ -678,8 +724,10 @@ String runRingWorkflow() {
     return "{\"ok\":false,\"error\":\"ESP ist nicht mit dem WLAN verbunden.\"}";
   }
 
-  logPrintln("[RING] Startsignal blinkt.");
-  blinkStartSequence();
+  // Kein separates Startsignal-Blinken mehr: Die Blitz-LED leuchtet
+  // ausschliesslich waehrend einer tatsaechlichen Bildaufnahme
+  // (siehe captureFrameWithFlash), also genau einmal pro Burst-Foto.
+  logPrintln("[RING] Starte Bildaufnahme (Blitz nur pro Foto).");
   delay(kRingSettleDelayMs);
 
   int matchedImages = 0;
@@ -688,21 +736,38 @@ String runRingWorkflow() {
   String lastResponse = "{\"ok\":false,\"error\":\"Keine Antwort vom Pi erhalten.\"}";
   int detectedFaceImages = 0;
 
-  for (int sequence = 1; sequence <= kBurstImageCount; ++sequence) {
-    logPrintf("[RING] Erfasse Bild %d/%d ...\n", sequence, kBurstImageCount);
-    camera_fb_t *frame = captureFrameWithFlash();
-    if (frame == nullptr) {
+  // Phase 1: Alle Bilder zuegig hintereinander aufnehmen und puffern. Dadurch
+  // kommen die Blitze kurz und gleichmaessig, unabhaengig von der spaeteren
+  // Netzwerk- und Erkennungszeit.
+  CapturedImage images[kBurstImageCount];
+  for (int i = 0; i < kBurstImageCount; ++i) {
+    images[i].data = nullptr;
+    images[i].len = 0;
+  }
+  int capturedCount = 0;
+  for (int i = 0; i < kBurstImageCount; ++i) {
+    logPrintf("[RING] Nehme Bild %d/%d auf ...\n", i + 1, kBurstImageCount);
+    if (captureFrameToBuffer(&images[capturedCount])) {
+      logPrintf("[RING] Bild %d gepuffert. Groesse: %u Bytes\n", i + 1, images[capturedCount].len);
+      capturedCount++;
+    } else {
       logPrintln("[RING] Kamerabild konnte nicht gelesen werden.");
       allSuccessful = false;
       lastResponse = "{\"ok\":false,\"error\":\"Kamerabild konnte nicht gelesen werden.\"}";
-      continue;
     }
+    if (i < kBurstImageCount - 1) {
+      delay(kBurstPauseMs);
+    }
+  }
 
-    logPrintf("[RING] Bild %d vorhanden. Groesse: %u Bytes\n", sequence, frame->len);
+  // Phase 2: Die gepufferten Bilder nacheinander an den Pi senden.
+  for (int i = 0; i < capturedCount; ++i) {
+    int sequence = i + 1;
+    logPrintf("[RING] Sende Bild %d/%d ...\n", sequence, capturedCount);
 
     String url = String(kRingCaptureBaseUrl);
     url += url.indexOf('?') >= 0 ? "&" : "?";
-    url += "sequence=" + sequence;
+    url += "sequence=" + String(sequence);
     url += "&total=" + String(kBurstImageCount);
     if (eventId >= 0) {
       url += "&event_id=" + String(eventId);
@@ -711,20 +776,24 @@ String runRingWorkflow() {
     int statusCode = -1;
     bool captureMatched = false;
     bool overallMatched = false;
-    lastResponse = postFrameToPi(url, frame, &statusCode, &captureMatched, &overallMatched, &eventId);
-    esp_camera_fb_return(frame);
+    lastResponse = postFrameToPi(url, images[i].data, images[i].len, &statusCode, &captureMatched, &overallMatched, &eventId);
 
     if (statusCode <= 0) {
       allSuccessful = false;
     }
-
     if (captureMatched) {
       matchedImages++;
     }
     if (jsonGetInt(lastResponse, "detected_faces", 0) > 0) {
       detectedFaceImages++;
     }
-    delay(kBurstPauseMs);
+  }
+
+  // Puffer freigeben.
+  for (int i = 0; i < capturedCount; ++i) {
+    free(images[i].data);
+    images[i].data = nullptr;
+    images[i].len = 0;
   }
 
   gRingInProgress = false;
@@ -807,6 +876,11 @@ bool initCamera() {
 bool connectToWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
+  // Statische IP setzen, damit beim Verbinden kein DHCP-Lease ausgehandelt
+  // werden muss. Schlaegt das fehl, faellt der ESP automatisch auf DHCP zurueck.
+  if (!WiFi.config(kStaticIp, kGateway, kSubnet, kPrimaryDns)) {
+    logPrintln("[WIFI] Statische IP konnte nicht gesetzt werden, nutze DHCP.");
+  }
   WiFi.begin(kWifiSsid, kWifiPassword);
 
   logPrintln();

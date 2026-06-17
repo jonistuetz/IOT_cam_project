@@ -19,8 +19,10 @@
 
 namespace {
 
-// Ziel-URLs des Raspberry-Pi-Verifikationsdiensts. Die WLAN-Zugangsdaten kommen
-// aus secrets.h (WIFI_SSID / WIFI_PASSWORD) und stehen nicht mehr im Quellcode.
+// Ziel-URLs des Raspberry-Pi-Verifikationsdiensts. Die Kommunikation zwischen
+// ESP32 und Pi läuft bewusst als HTTP im lokalen Hotspot-Netz 10.42.0.0/24:
+// Der Pi ist Gateway/Server, der ESP ist HTTP-Client. HTTPS wird erst für den
+// externen Telegram-Uplink vom Pi zur Telegram-API verwendet.
 const char kWifiSsid[] = WIFI_SSID;
 const char kWifiPassword[] = WIFI_PASSWORD;
 const char kVerifierUrl[] = "http://10.42.0.1:8000/api/verify";
@@ -36,7 +38,9 @@ const IPAddress kGateway(10, 42, 0, 1);
 const IPAddress kSubnet(255, 255, 255, 0);
 const IPAddress kPrimaryDns(10, 42, 0, 1);
 
-// HTTP-Server auf Port 80 für die Geräte-API.
+// HTTP-Server auf Port 80 für die kleine Geräte-API des ESP. Der Pi nutzt diese
+// API nur bei Live-Snapshots/Anlernen; im Klingelbetrieb sendet der ESP aktiv
+// per HTTP POST zum Pi.
 WebServer server(80);
 
 // Kameraeinstellungen: kleine Aufloesung fuer schnelle Einzelbilder.
@@ -195,6 +199,9 @@ void flushRemoteLogs() {
     if (http.begin(kLogUrl)) {
       http.addHeader("Content-Type", "text/plain; charset=utf-8");
       http.addHeader("X-ESP-MAC", WiFi.macAddress());
+      // POST statt GET, weil Logzeilen Nutzdaten sind und nicht in die URL
+      // gehören. 4xx-Fehler werden als zugestellt betrachtet, damit ein
+      // dauerhaft abgewiesener Logeintrag die kleine Queue nicht blockiert.
       int statusCode = http.POST(line);
       sent = statusCode > 0 && statusCode < 500;
       http.end();
@@ -637,6 +644,10 @@ String postFrameToPi(
   }
 
   http.addHeader("Content-Type", "image/jpeg");
+  // Raw-Body-Upload: Die ESP32-CAM sendet die JPEG-Bytes direkt im HTTP-Body.
+  // Es wird kein multipart/form-data verwendet, weil der Pi-Endpunkt sowohl
+  // rohe Bodies als auch Formular-Uploads versteht und rohe Bodies weniger
+  // Overhead auf dem ESP verursachen.
   *statusCode = http.POST(const_cast<uint8_t *>(body), bodyLen);
   logPrintf("[RING] POST abgeschlossen. Status: %d\n", *statusCode);
 
@@ -676,6 +687,9 @@ String pollRingDecisionFromPi(int eventId) {
     return "unavailable";
   }
 
+  // GET ist hier passend, weil der ESP nur den aktuellen Entscheidungszustand
+  // abfragt und keine Daten verändert. Das Polling läuft in einem festen Takt
+  // (kTelegramDecisionPollIntervalMs), bis Telegram eine Entscheidung liefert.
   int statusCode = http.GET();
   if (statusCode <= 0) {
     logPrintf("[TELEGRAM] HTTP-Fehler bei Decision-Poll: %s\n", http.errorToString(statusCode).c_str());
@@ -770,7 +784,10 @@ String runRingWorkflow() {
     }
   }
 
-  // Phase 2: Die gepufferten Bilder nacheinander an den Pi senden.
+  // Phase 2: Die gepufferten Bilder nacheinander an den Pi senden. Die Sequenz-
+  // Nummern in der Query verknüpfen die Einzelbilder auf dem Pi zu einem
+  // Klingelereignis; ab Bild 2 wird die vom Pi zurückgegebene event_id
+  // mitgeschickt.
   for (int i = 0; i < capturedCount; ++i) {
     int sequence = i + 1;
     logPrintf("[RING] Sende Bild %d/%d ...\n", sequence, capturedCount);
@@ -985,6 +1002,8 @@ void handleVerify() {
   logPrintf("[VERIFY] Sende POST an %s\n", kVerifierUrl);
   if (http.begin(kVerifierUrl)) {
     http.addHeader("Content-Type", "image/jpeg");
+    // Einzelbild-Verifikation für manuelle Tests: gleicher Transport wie beim
+    // Klingel-Burst, aber ohne ring_events/ring_captures-Aggregation.
     statusCode = http.POST(frame->buf, frame->len);
     logPrintf("[VERIFY] POST abgeschlossen. Status: %d\n", statusCode);
 
@@ -1073,7 +1092,11 @@ void handleIdleDeepSleep() {
 }
 
 void startServer() {
-  // Geraete-API: Snapshot, Status und Ring-Trigger.
+  // Geräte-API des ESP:
+  //   GET  /status    -> Zustand lesen
+  //   GET  /snapshot  -> aktuelles JPEG für Setup/Anlernen
+  //   POST /verify    -> Einzelbild lokal aufnehmen und am Pi prüfen lassen
+  //   POST /ring      -> vollständigen Klingelworkflow starten
   server.on("/", HTTP_GET, handleStatus);
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/snapshot", HTTP_GET, handleSnapshot);

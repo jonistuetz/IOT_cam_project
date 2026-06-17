@@ -19,6 +19,12 @@ from .log import debug
 from .utils.timeutils import utc_now
 
 
+TELEGRAM_SEND_PHOTO_TIMEOUT_S = 15
+TELEGRAM_SEND_MESSAGE_TIMEOUT_S = 5
+TELEGRAM_GET_UPDATES_TIMEOUT_S = 5
+TELEGRAM_ANSWER_CALLBACK_TIMEOUT_S = 5
+
+
 class TelegramNotifier:
   def __init__(self, service) -> None:
     self._service = service
@@ -87,6 +93,9 @@ class TelegramNotifier:
     image_path = self._service.captures_dir / capture_row["image_path"] if capture_row is not None else None
 
     try:
+      # Externe Kommunikation: ab hier spricht der Raspberry Pi per HTTPS mit
+      # der Telegram Bot API. Der ESP sieht davon nichts; er fragt später nur
+      # den lokalen Pi-Endpunkt /api/ring-decision ab.
       message_id = self._send_photo(image_path, caption, event_id)
     except Exception as exc:
       debug(f"telegram send failed event_id={event_id}: {exc}")
@@ -126,6 +135,8 @@ class TelegramNotifier:
     return "\n".join(lines)
 
   def _api_url(self, method: str) -> str:
+    # Telegram nutzt klassische HTTPS-Endpunkte pro Bot-Methode, z. B.
+    # sendPhoto, sendMessage, getUpdates und answerCallbackQuery.
     return f"https://api.telegram.org/bot{self._token}/{method}"
 
   def _reply_markup(self, event_id: int) -> str:
@@ -141,6 +152,9 @@ class TelegramNotifier:
   def _send_photo(self, image_path: Optional[Path], caption: str, event_id: int) -> int:
     if image_path is not None and image_path.exists():
       with image_path.open("rb") as image_file:
+        # sendPhoto ist ein multipart/form-data POST: Textfelder liegen in
+        # data=, das JPEG im files=-Teil. Das ist die von requests angebotene
+        # Standardabbildung für Datei-Uploads über HTTP.
         response = requests.post(
             self._api_url("sendPhoto"),
             data={
@@ -149,9 +163,10 @@ class TelegramNotifier:
                 "reply_markup": self._reply_markup(event_id),
             },
             files={"photo": image_file},
-            timeout=15,
+            timeout=TELEGRAM_SEND_PHOTO_TIMEOUT_S,
         )
     else:
+      # Fallback ohne Bild: weiterhin POST, aber nur Formularfelder.
       response = requests.post(
           self._api_url("sendMessage"),
           data={
@@ -159,7 +174,7 @@ class TelegramNotifier:
               "text": caption,
               "reply_markup": self._reply_markup(event_id),
           },
-          timeout=15,
+          timeout=TELEGRAM_SEND_MESSAGE_TIMEOUT_S,
       )
 
     response.raise_for_status()
@@ -187,7 +202,7 @@ class TelegramNotifier:
               "chat_id": self._chat_id,
               "text": "Smart Doorbell Telegram-Test: Verbindung funktioniert.",
           },
-          timeout=15,
+          timeout=TELEGRAM_SEND_MESSAGE_TIMEOUT_S,
       )
       response.raise_for_status()
       payload = response.json()
@@ -212,12 +227,19 @@ class TelegramNotifier:
       return
 
     offset = get_app_state(self._service.db_path, "telegram_update_offset")
+    # Kurzes Polling statt Webhook: Der Pi muss von außen nicht erreichbar sein.
+    # offset verhindert, dass bereits verarbeitete Callback-Updates erneut
+    # ausgewertet werden. timeout=0 bedeutet: kein Telegram-Long-Polling.
     params = {"timeout": 0, "allowed_updates": json.dumps(["callback_query"])}
     if offset is not None:
       params["offset"] = str(int(offset))
 
     try:
-      response = requests.get(self._api_url("getUpdates"), params=params, timeout=15)
+      response = requests.get(
+          self._api_url("getUpdates"),
+          params=params,
+          timeout=TELEGRAM_GET_UPDATES_TIMEOUT_S,
+      )
       response.raise_for_status()
       payload = response.json()
     except Exception as exc:
@@ -248,6 +270,9 @@ class TelegramNotifier:
       self._answer_callback(callback_id, "Dieser Chat ist nicht freigeschaltet.")
       return
 
+    # callback_data ist ein kleines eigenes Protokoll:
+    # doorbell:<approve|deny>:<event_id>. Dadurch kann der Pi die Telegram-
+    # Button-Antwort wieder eindeutig einem lokalen Klingelereignis zuordnen.
     parts = data.split(":")
     if len(parts) != 3 or parts[0] != "doorbell" or parts[1] not in {"approve", "deny"}:
       self._answer_callback(callback_id, "Unbekannter Befehl.")
@@ -297,7 +322,7 @@ class TelegramNotifier:
       response = requests.post(
           self._api_url("answerCallbackQuery"),
           data={"callback_query_id": callback_id, "text": text},
-          timeout=15,
+          timeout=TELEGRAM_ANSWER_CALLBACK_TIMEOUT_S,
       )
       response.raise_for_status()
     except Exception as exc:

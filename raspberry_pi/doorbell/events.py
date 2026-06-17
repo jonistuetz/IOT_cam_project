@@ -35,6 +35,9 @@ class EventsMixin:
 
     with sqlite3.connect(self.db_path) as connection:
       if event_id is None:
+        # Das erste Bild eines Bursts legt das Klingelereignis an. Die weiteren
+        # Bilder kommen mit derselben event_id zurück und aktualisieren Zähler
+        # und beste Ähnlichkeit.
         cursor = connection.execute(
             """
             INSERT INTO ring_events (person_id, total_images, received_images, matched_images, matched, best_similarity, created_at, updated_at)
@@ -83,6 +86,8 @@ class EventsMixin:
       received_images = int(event_row[0]) + 1
       matched_images = int(event_row[1]) + (1 if result.matched else 0)
       required_matches = min(DEFAULT_REQUIRED_MATCHES_FOR_ACCESS, total_images)
+      # Mehrheitsähnliche Entscheidung: Bei drei Bildern reichen zwei Treffer.
+      # Das reduziert Fehlentscheidungen durch ein einzelnes schlechtes Frame.
       event_matched = matched_images >= required_matches
       current_best = event_row[3]
       best_similarity = current_best
@@ -101,6 +106,8 @@ class EventsMixin:
 
     event_complete = received_images >= total_images
     if event_complete:
+      # Erst nach dem letzten Bild wird Telegram informiert, damit die Nachricht
+      # die aggregierte Empfehlung und das beste gespeicherte Bild enthält.
       self._send_telegram_notification_for_event(event_id)
 
     self._debug(
@@ -129,6 +136,9 @@ class EventsMixin:
     }
 
   def get_event_decision(self, event_id: int) -> dict:
+    # Der ESP pollt diesen lokalen Endpunkt. Vor dem Datenbank-Lookup werden
+    # Telegram-Updates synchronisiert, sodass neue Button-Klicks ohne separaten
+    # Hintergrundworker sichtbar werden.
     self._sync_telegram_updates()
     with sqlite3.connect(self.db_path) as connection:
       connection.row_factory = sqlite3.Row

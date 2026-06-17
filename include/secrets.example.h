@@ -10,5 +10,5 @@
 // Zugangsdaten im Quellcode bzw. im Git-Repository landen. Wer den Flash des ESP
 // physisch ausliest, kann sie weiterhin sehen (dafür: ESP32 Flash Encryption).
 
-#define WIFI_SSID "your-ssid"
-#define WIFI_PASSWORD "your-password"
+#define WIFI_SSID "deine-ssid"
+#define WIFI_PASSWORD "dein-passwort"

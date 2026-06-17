@@ -150,6 +150,8 @@ def register_routes(app, service) -> None:
 
   @app.get("/api/live-snapshot")
   def live_snapshot():
+    # Browser -> Pi -> ESP: Die Setup-Seite ruft den Pi auf; der Pi holt das
+    # JPEG per HTTP GET vom ESP und reicht es mit no-store weiter.
     try:
       image_bytes = service.fetch_live_snapshot()
     except (urlerror.URLError, TimeoutError, OSError) as exc:
@@ -266,6 +268,8 @@ def register_routes(app, service) -> None:
 
   @app.post("/api/verify")
   def verify():
+    # Einzelbild-Verifikation: akzeptiert sowohl multipart/form-data als auch
+    # rohe JPEG-Bytes im Body. Der ESP nutzt den Raw-Body-Weg.
     person_id = (
         request.form.get("person_id")
         or request.headers.get("X-Person-Id")
@@ -299,6 +303,8 @@ def register_routes(app, service) -> None:
 
   @app.post("/api/ring-capture")
   def ring_capture():
+    # Klingel-Burst: Jeder POST enthält genau ein JPEG. sequence/total/event_id
+    # verbinden die Einzelbilder serverseitig zu einem gemeinsamen Ereignis.
     person_id = (
         request.form.get("person_id")
         or request.headers.get("X-Person-Id")
@@ -332,6 +338,9 @@ def register_routes(app, service) -> None:
 
   @app.post("/api/esp-log")
   def esp_log():
+    # Remote-Logs des ESP bleiben absichtlich simpel: text/plain im Body,
+    # MAC-Adresse im Header. Persistiert wird hier nichts, Ausgabe landet im
+    # systemd/journalctl-Log des Pi-Dienstes.
     mac = request.headers.get("X-ESP-MAC", "unknown")
     message = request.get_data(as_text=True).strip()
     if message:
@@ -340,6 +349,8 @@ def register_routes(app, service) -> None:
 
   @app.get("/api/ring-decision")
   def ring_decision():
+    # Polling-Endpunkt für den ESP. GET ist ausreichend, weil nur der aktuelle
+    # Entscheidungsstand gelesen wird; Änderungen kommen über Telegram-Callbacks.
     event_id_value = request.args.get("event_id")
     if not event_id_value:
       return jsonify({"ok": False, "error": "event_id fehlt."}), 400

@@ -26,6 +26,9 @@ def network_status() -> dict:
   }
 
   try:
+    # UDP-"connect" sendet hier kein Nutzpaket. Es fragt das Routing des
+    # Betriebssystems ab und liefert die lokale IP, über die Internetziele
+    # erreicht würden.
     probe_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     probe_socket.settimeout(2.0)
     probe_socket.connect(("1.1.1.1", 80))
@@ -36,6 +39,8 @@ def network_status() -> dict:
     return status
 
   try:
+    # DNS-Check getrennt vom TCP-Check, damit die Oberfläche genauer zeigen kann,
+    # ob Namensauflösung oder eigentliche Verbindung das Problem ist.
     resolved_ip = socket.gethostbyname(target_host)
     status["resolved_ip"] = resolved_ip
     status["dns_ok"] = True
@@ -44,6 +49,8 @@ def network_status() -> dict:
     return status
 
   try:
+    # Reiner TCP-Verbindungsaufbau zu Port 443. Der echte TLS-Handshake und die
+    # HTTP-Requests laufen später über requests in telegram.py.
     tcp_socket = socket.create_connection((target_host, 443), timeout=4.0)
     tcp_socket.close()
     status["tcp_ok"] = True

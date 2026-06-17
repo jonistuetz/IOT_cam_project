@@ -25,7 +25,7 @@ from doorbell.web.app import create_app
 
 
 def parse_args() -> argparse.Namespace:
-  parser = argparse.ArgumentParser(description="Face verification prototype for Raspberry Pi 4.")
+  parser = argparse.ArgumentParser(description="Gesichtsverifikation für die smarte Türklingel auf dem Raspberry Pi 4.")
   parser.add_argument("--db-path", default=str(DEFAULT_DB_PATH), help="Pfad zur SQLite-Datenbank.")
   parser.add_argument("--config-path", default=str(DEFAULT_CONFIG_PATH), help="Pfad zur lokalen Konfigurationsdatei.")
   parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME, help="InsightFace-Modellname.")
@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
       "--threshold",
       type=float,
       default=DEFAULT_SIMILARITY_THRESHOLD,
-      help="Cosine-Similarity-Schwelle für match/no_match.",
+      help="Cosine-Similarity-Schwelle für Treffer/Nicht-Treffer.",
   )
 
   subparsers = parser.add_subparsers(dest="command", required=True)

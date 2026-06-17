@@ -602,7 +602,7 @@
 
         card.appendChild(document.createTextNode("Referenzbilder: " + person.reference_count));
         card.appendChild(document.createElement("br"));
-        card.appendChild(document.createTextNode("Aktualisiert: " + (person.updated_at || "n/a")));
+        card.appendChild(document.createTextNode("Aktualisiert: " + (person.updated_at || "nicht verfügbar")));
 
         const actions = document.createElement("div");
         actions.className = "person-actions";
